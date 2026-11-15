@@ -2,7 +2,7 @@
 /* Учёт работы — PWA. Создатель: Artur Alimhulov.
    Все данные хранятся только на телефоне (localStorage). */
 
-const VERSION = '1.4';
+const VERSION = '1.5';
 const STORE_KEY = 'uchet-raboty-v1';
 
 /* ===================== Дни ===================== */
@@ -47,6 +47,7 @@ const DEFAULTS = {
   settings: { lang: 'ru', palette: 0, theme: 'system', header: '', reminders: true, reminderMinute: 480, onboarded: false },
   dismissed: {},
   installHidden: false,
+  auth: { code: '', device: '', ok: false, name: '', reason: '', checkedAt: 0 },
 };
 
 let S = load();
@@ -61,6 +62,7 @@ function load() {
     Object.assign(s.report, raw.report || {});
     Object.assign(s.settings, raw.settings || {});
     Object.assign(s.dismissed, raw.dismissed || {});
+    Object.assign(s.auth, raw.auth || {});
     s.installHidden = !!raw.installHidden;
   }
   return s;
@@ -211,6 +213,71 @@ function dueReminders() {
     })
     .sort()
     .map(fromIso);
+}
+
+/* ===================== Код доступа ===================== */
+/* Каждый пользователь вводит свой личный код. Код привязывается к одному телефону.
+   Владелец может отключить код — тогда при следующем запуске с интернетом приложение закроется. */
+const AUTH_API = (window.AUTH_API || '').replace(/\/+$/, '');
+const CHECK_EVERY = 10 * 60 * 1000;
+const locked = () => !!AUTH_API && !S.auth.ok;
+
+function deviceId() {
+  if (!S.auth.device) {
+    S.auth.device = (window.crypto && crypto.randomUUID)
+      ? crypto.randomUUID()
+      : `d-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 12)}`;
+    save();
+  }
+  return S.auth.device;
+}
+
+async function api(path, data) {
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), 12000);
+  try {
+    const res = await fetch(AUTH_API + path, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(data),
+      signal: ctrl.signal,
+      cache: 'no-store',
+    });
+    return await res.json();
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+function authMessage(reason) {
+  switch (reason) {
+    case 'invalid': return t('Неверный код. Проверь и попробуй ещё раз.', 'Nieprawidłowy kod. Sprawdź i spróbuj ponownie.');
+    case 'disabled': return t('Доступ по этому коду отключён.', 'Dostęp dla tego kodu został wyłączony.');
+    case 'other_device': return t('Этот код уже используется на другом телефоне.', 'Ten kod jest już używany na innym telefonie.');
+    case 'unbound': return t('Код отвязан от этого телефона. Введи код ещё раз.', 'Kod został odłączony od tego telefonu. Wpisz kod ponownie.');
+    case 'network': return t('Нет связи с сервером. Проверь интернет и попробуй ещё раз.', 'Brak połączenia z serwerem. Sprawdź internet i spróbuj ponownie.');
+    case 'empty': return t('Введи код доступа.', 'Wpisz kod dostępu.');
+    default: return '';
+  }
+}
+
+/* Тихая проверка при запуске: если код отключили — закрываем приложение. Без интернета ничего не делаем. */
+async function checkAccess(force) {
+  if (!AUTH_API || !S.auth.ok || !S.auth.code) return;
+  if (!force && Date.now() - (S.auth.checkedAt || 0) < CHECK_EVERY) return;
+  try {
+    const r = await api('/check', { code: S.auth.code, device: deviceId() });
+    S.auth.checkedAt = Date.now();
+    if (r && r.ok === false && ['invalid', 'disabled', 'other_device', 'unbound'].includes(r.reason)) {
+      S.auth.ok = false;
+      S.auth.reason = r.reason;
+      save();
+      render();
+    } else {
+      if (r && r.name) S.auth.name = r.name;
+      save();
+    }
+  } catch (e) { /* нет интернета — работаем как обычно */ }
 }
 
 /* ===================== Тема ===================== */
@@ -596,6 +663,7 @@ function renderSettings() {
       <div class="c1">${t('Создатель', 'Twórca')}</div>
       <div class="c2">Artur Alimhulov</div>
       <div class="c3">${t('Версия', 'Wersja')} ${VERSION}</div>
+      ${AUTH_API && S.auth.code ? `<div class="c3">${t('Код доступа', 'Kod dostępu')}: ${S.auth.code.slice(0, 4)}-${S.auth.code.slice(4)}${S.auth.name ? ` · ${esc(S.auth.name)}` : ''}</div>` : ''}
     </div>`;
 }
 
@@ -606,8 +674,8 @@ let installEvent = null;
 window.addEventListener('beforeinstallprompt', (e) => { e.preventDefault(); installEvent = e; renderTop(); if (ui.tab === 4) render(); });
 
 function installText() {
-  if (isIOS()) return t('Нажми «Поделиться» внизу Safari → «На экран „Домой“». Появится иконка, и приложение будет работать как обычное.',
-    'Stuknij „Udostępnij” na dole Safari → „Do ekranu początkowego”. Pojawi się ikona i aplikacja będzie działać jak zwykła.');
+  if (isIOS()) return t('В Safari нажми «•••» (или значок «Поделиться») → «Поделиться» → пролистай вниз → «На экран „Домой“» → «Добавить». Появится иконка, и приложение будет работать как обычное.',
+    'W Safari stuknij „•••” (lub ikonę „Udostępnij”) → „Udostępnij” → przewiń w dół → „Do ekranu początkowego” → „Dodaj”. Pojawi się ikona i aplikacja będzie działać jak zwykła.');
   if (installEvent) return t('Установи приложение на главный экран — оно будет работать без интернета.', 'Zainstaluj aplikację na ekranie głównym — będzie działać bez internetu.');
   return t('Меню браузера (⋮) → «Установить приложение» или «Добавить на главный экран».', 'Menu przeglądarki (⋮) → „Zainstaluj aplikację” lub „Dodaj do ekranu głównego”.');
 }
@@ -640,7 +708,30 @@ function renderTop() {
 }
 
 /* ===================== Окно приветствия ===================== */
+function renderLock() {
+  const st = S.settings;
+  const hasData = Object.keys(S.entries).length > 0;
+  const msg = authMessage(S.auth.reason);
+  $sheet.innerHTML = `<div class="lock"><div class="lock-box">
+    <img class="logo" src="icons/icon-192.png" alt="">
+    <h2>${t('Учёт работы', 'Ewidencja pracy')}</h2>
+    <p class="muted">${t('Приложение работает по личному коду доступа. Введи код, который тебе дали.',
+      'Aplikacja działa na osobisty kod dostępu. Wpisz kod, który otrzymałeś.')}</p>
+    <div class="seg"><button class="${st.lang === 'ru' ? 'on' : ''}" data-act="lang" data-v="ru">Русский</button><button class="${st.lang === 'pl' ? 'on' : ''}" data-act="lang" data-v="pl">Polski</button></div>
+    <input class="field code-input" id="lock-code" placeholder="XXXX-XXXX" autocomplete="off" autocapitalize="characters" spellcheck="false" maxlength="12" aria-label="${t('Код доступа', 'Kod dostępu')}">
+    <p class="lock-err" id="lock-err">${esc(msg)}</p>
+    <button class="btn primary" data-act="activate" id="lock-btn">${t('Войти', 'Wejdź')}</button>
+    ${hasData ? `<button class="link" data-act="backup">${ic('download', 16)} ${t('Сохранить мои записи', 'Zapisz moje wpisy')}</button>` : ''}
+    <div class="footer"><div class="c1">${t('Создатель', 'Twórca')}</div><div class="c2">Artur Alimhulov</div></div>
+  </div></div>`;
+}
+
 function renderSheet() {
+  if (locked()) {
+    // Не перерисовываем экран кода, пока человек печатает
+    if (!document.getElementById('lock-code')) renderLock();
+    return;
+  }
   if (S.settings.onboarded) { $sheet.innerHTML = ''; return; }
   const st = S.settings;
   $sheet.innerHTML = `<div class="sheet-bg"><div class="sheet">
@@ -817,7 +908,31 @@ const actions = {
   'share-report'() { shareText(buildReport(periodFromIndex(ui.period))); },
   async 'copy-report'() { if (await copyText(buildReport(periodFromIndex(ui.period)))) toast(t('Отчёт скопирован', 'Raport skopiowany')); },
   'toggle-report'() { ui.showReport = !ui.showReport; render(); },
-  lang(el) { S.settings.lang = el.dataset.v; save(); render(); },
+  lang(el) { S.settings.lang = el.dataset.v; save(); if (locked()) $sheet.innerHTML = ''; render(); },
+  async activate() {
+    const inp = document.getElementById('lock-code');
+    const err = document.getElementById('lock-err');
+    const btn = document.getElementById('lock-btn');
+    const code = (inp.value || '').toUpperCase().replace(/[^A-Z0-9]/g, '');
+    if (!code) { err.textContent = authMessage('empty'); return; }
+    btn.disabled = true;
+    err.textContent = '';
+    try {
+      const r = await api('/activate', { code, device: deviceId() });
+      if (r && r.ok) {
+        S.auth = { ...S.auth, code, ok: true, name: r.name || '', reason: '', checkedAt: Date.now() };
+        save();
+        $sheet.innerHTML = '';
+        render();
+        toast(`${t('Добро пожаловать', 'Witaj')}${r.name ? `, ${r.name}` : ''}!`);
+        return;
+      }
+      err.textContent = authMessage((r && r.reason) || 'invalid');
+    } catch (e) {
+      err.textContent = authMessage('network');
+    }
+    btn.disabled = false;
+  },
   palette(el) { S.settings.palette = Number(el.dataset.v); save(); render(); },
   theme(el) { S.settings.theme = el.dataset.v; save(); render(); },
   start() { S.settings.onboarded = true; save(); render(); },
@@ -847,6 +962,19 @@ document.addEventListener('click', (ev) => {
   if (!el) return;
   const fn = actions[el.dataset.act];
   if (fn) { ev.preventDefault(); fn(el); }
+});
+
+document.addEventListener('keydown', (ev) => {
+  if (ev.key === 'Enter' && ev.target.id === 'lock-code') { ev.preventDefault(); actions.activate(); }
+});
+
+document.addEventListener('input', (ev) => {
+  if (ev.target.id === 'lock-code') {
+    // Формат XXXX-XXXX по мере ввода
+    const raw = ev.target.value.toUpperCase().replace(/[^A-Z0-9]/g, '').slice(0, 8);
+    ev.target.value = raw.length > 4 ? `${raw.slice(0, 4)}-${raw.slice(4)}` : raw;
+    return;
+  }
 });
 
 document.addEventListener('input', (ev) => {
@@ -926,7 +1054,7 @@ async function importFile(file) {
 /* ===================== Запуск ===================== */
 darkMq.addEventListener('change', () => { if (S.settings.theme === 'system') applyTheme(); });
 document.addEventListener('visibilitychange', () => {
-  if (document.visibilityState === 'visible') renderTop();
+  if (document.visibilityState === 'visible') { renderTop(); checkAccess(); }
 });
 setInterval(renderTop, 60000);
 
@@ -936,3 +1064,4 @@ if ('serviceWorker' in navigator && location.protocol !== 'file:') {
 if (navigator.storage && navigator.storage.persist) { navigator.storage.persist().catch(() => {}); }
 
 render(true);
+checkAccess(true);
