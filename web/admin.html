@@ -135,6 +135,7 @@
         <div class="acts">
           <button data-a="invite" data-c="${esc(it.code)}">Копировать приглашение</button>
           <button data-a="rename" data-c="${esc(it.code)}">Переименовать</button>
+          <button data-a="regen" data-c="${esc(it.code)}">Сменить код</button>
           ${it.owner ? '' : (it.active
             ? `<button class="danger" data-a="disable" data-c="${esc(it.code)}">Отключить</button>`
             : `<button data-a="enable" data-c="${esc(it.code)}">Включить</button>`)}
@@ -158,8 +159,10 @@
         <p class="err" id="err"></p>
         <button class="btn primary" id="create">Создать код</button>
       </section>
-      <p class="muted">Всего кодов: ${items.length}. Отключённый человек потеряет доступ при следующем запуске приложения с интернетом.
-        «Отвязать телефон» — если человек сменил телефон или переустановил приложение: потом он вводит тот же код заново.</p>
+      <p class="muted">Всего кодов: ${items.length}.<br>
+        <b>Отключить</b> — закрыть доступ (сработает при следующем запуске приложения с интернетом).<br>
+        <b>Сменить код</b> — старый код перестаёт работать, человек получает новый.<br>
+        <b>Отвязать телефон</b> — если человек сменил телефон: он вводит тот же код на новом.</p>
       ${people || '<p class="muted">Пока нет ни одного кода. Создай сначала код для себя.</p>'}`;
 
     document.getElementById('logout').onclick = () => { sessionStorage.removeItem('admin-pass'); pass = ''; created = null; renderLogin(); };
@@ -182,6 +185,17 @@
     const code = b.dataset.c, action = b.dataset.a;
     const it = items.find((i) => i.code === code) || created;
     if (action === 'invite') { copy(invite(it)); return; }
+    if (action === 'regen') {
+      if (!confirm(`Выдать «${it.name}» новый код? Старый код ${it.code} сразу перестанет работать, человеку нужно будет ввести новый.`)) return;
+      try {
+        const r = await call('/admin/update', 'POST', { code, action: 'regen' });
+        created = { ...it, code: r.code };
+        await load();
+        window.scrollTo(0, 0);
+        toast('Новый код создан');
+      } catch (e) { toast('Ошибка'); }
+      return;
+    }
     if (action === 'rename') {
       const name = (prompt('Новое имя:', it.name) || '').trim();
       if (!name || name === it.name) return;

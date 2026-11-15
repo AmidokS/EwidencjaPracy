@@ -2,7 +2,7 @@
 /* Учёт работы — PWA. Создатель: Artur Alimhulov.
    Все данные хранятся только на телефоне (localStorage). */
 
-const VERSION = '1.5';
+const VERSION = '1.6';
 const STORE_KEY = 'uchet-raboty-v1';
 
 /* ===================== Дни ===================== */
@@ -221,6 +221,7 @@ function dueReminders() {
 const AUTH_API = (window.AUTH_API || '').replace(/\/+$/, '');
 const CHECK_EVERY = 10 * 60 * 1000;
 const locked = () => !!AUTH_API && !S.auth.ok;
+const prettyCode = (c) => (c && c.length === 8 ? `${c.slice(0, 4)}-${c.slice(4)}` : c || '');
 
 function deviceId() {
   if (!S.auth.device) {
@@ -255,6 +256,8 @@ function authMessage(reason) {
     case 'disabled': return t('Доступ по этому коду отключён.', 'Dostęp dla tego kodu został wyłączony.');
     case 'other_device': return t('Этот код уже используется на другом телефоне.', 'Ten kod jest już używany na innym telefonie.');
     case 'unbound': return t('Код отвязан от этого телефона. Введи код ещё раз.', 'Kod został odłączony od tego telefonu. Wpisz kod ponownie.');
+    case 'revoked': return t('Твой код больше не действует. Введи новый код.', 'Twój kod już nie działa. Wpisz nowy kod.');
+    case 'too_many': return t('Слишком много неверных попыток. Попробуй через час.', 'Zbyt wiele błędnych prób. Spróbuj za godzinę.');
     case 'network': return t('Нет связи с сервером. Проверь интернет и попробуй ещё раз.', 'Brak połączenia z serwerem. Sprawdź internet i spróbuj ponownie.');
     case 'empty': return t('Введи код доступа.', 'Wpisz kod dostępu.');
     default: return '';
@@ -270,7 +273,7 @@ async function checkAccess(force) {
     S.auth.checkedAt = Date.now();
     if (r && r.ok === false && ['invalid', 'disabled', 'other_device', 'unbound'].includes(r.reason)) {
       S.auth.ok = false;
-      S.auth.reason = r.reason;
+      S.auth.reason = r.reason === 'invalid' ? 'revoked' : r.reason;
       save();
       render();
     } else {
@@ -663,7 +666,7 @@ function renderSettings() {
       <div class="c1">${t('Создатель', 'Twórca')}</div>
       <div class="c2">Artur Alimhulov</div>
       <div class="c3">${t('Версия', 'Wersja')} ${VERSION}</div>
-      ${AUTH_API && S.auth.code ? `<div class="c3">${t('Код доступа', 'Kod dostępu')}: ${S.auth.code.slice(0, 4)}-${S.auth.code.slice(4)}${S.auth.name ? ` · ${esc(S.auth.name)}` : ''}</div>` : ''}
+      ${AUTH_API && S.auth.code ? `<div class="c3">${t('Код доступа', 'Kod dostępu')}: ${prettyCode(S.auth.code)}${S.auth.name ? ` · ${esc(S.auth.name)}` : ''}</div>` : ''}
     </div>`;
 }
 
@@ -718,7 +721,7 @@ function renderLock() {
     <p class="muted">${t('Приложение работает по личному коду доступа. Введи код, который тебе дали.',
       'Aplikacja działa na osobisty kod dostępu. Wpisz kod, który otrzymałeś.')}</p>
     <div class="seg"><button class="${st.lang === 'ru' ? 'on' : ''}" data-act="lang" data-v="ru">Русский</button><button class="${st.lang === 'pl' ? 'on' : ''}" data-act="lang" data-v="pl">Polski</button></div>
-    <input class="field code-input" id="lock-code" placeholder="XXXX-XXXX" autocomplete="off" autocapitalize="characters" spellcheck="false" maxlength="12" aria-label="${t('Код доступа', 'Kod dostępu')}">
+    <input class="field code-input" id="lock-code" placeholder="••••" inputmode="numeric" autocomplete="one-time-code" autocapitalize="characters" spellcheck="false" maxlength="9" aria-label="${t('Код доступа', 'Kod dostępu')}">
     <p class="lock-err" id="lock-err">${esc(msg)}</p>
     <button class="btn primary" data-act="activate" id="lock-btn">${t('Войти', 'Wejdź')}</button>
     ${hasData ? `<button class="link" data-act="backup">${ic('download', 16)} ${t('Сохранить мои записи', 'Zapisz moje wpisy')}</button>` : ''}
@@ -913,6 +916,7 @@ const actions = {
     const inp = document.getElementById('lock-code');
     const err = document.getElementById('lock-err');
     const btn = document.getElementById('lock-btn');
+    if (btn.disabled) return; // уже проверяем
     const code = (inp.value || '').toUpperCase().replace(/[^A-Z0-9]/g, '');
     if (!code) { err.textContent = authMessage('empty'); return; }
     btn.disabled = true;
@@ -970,9 +974,11 @@ document.addEventListener('keydown', (ev) => {
 
 document.addEventListener('input', (ev) => {
   if (ev.target.id === 'lock-code') {
-    // Формат XXXX-XXXX по мере ввода
+    // Новые коды — 4 цифры; старые 8-символьные тоже принимаются (формат XXXX-XXXX)
     const raw = ev.target.value.toUpperCase().replace(/[^A-Z0-9]/g, '').slice(0, 8);
     ev.target.value = raw.length > 4 ? `${raw.slice(0, 4)}-${raw.slice(4)}` : raw;
+    // 4 цифры введены — входим сразу
+    if (/^\d{4}$/.test(raw) && ev.inputType !== 'deleteContentBackward') actions.activate();
     return;
   }
 });
