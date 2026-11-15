@@ -134,6 +134,7 @@
         </div>
         <div class="acts">
           <button data-a="invite" data-c="${esc(it.code)}">Копировать приглашение</button>
+          <button data-a="rename" data-c="${esc(it.code)}">Переименовать</button>
           ${it.owner ? '' : (it.active
             ? `<button class="danger" data-a="disable" data-c="${esc(it.code)}">Отключить</button>`
             : `<button data-a="enable" data-c="${esc(it.code)}">Включить</button>`)}
@@ -181,6 +182,17 @@
     const code = b.dataset.c, action = b.dataset.a;
     const it = items.find((i) => i.code === code) || created;
     if (action === 'invite') { copy(invite(it)); return; }
+    if (action === 'rename') {
+      const name = (prompt('Новое имя:', it.name) || '').trim();
+      if (!name || name === it.name) return;
+      try {
+        await call('/admin/update', 'POST', { code, action: 'rename', name });
+        if (created && created.code === code) created.name = name;
+        await load();
+        toast('Имя изменено');
+      } catch (e) { toast('Ошибка'); }
+      return;
+    }
     const ask = {
       disable: `Отключить доступ для «${it.name}»?`,
       delete: `Удалить код «${it.name}» навсегда?`,
