@@ -1,6 +1,6 @@
 {
-  "name": "Учёт работы",
-  "short_name": "Учёт работы",
+  "name": "Ewidencja Pracy",
+  "short_name": "Ewidencja Pracy",
   "description": "Точки катеринга, автоматы Жабки, часы и отчёты за период",
   "start_url": "./",
   "scope": "./",
