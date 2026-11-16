@@ -2,7 +2,7 @@
 /* Учёт работы — PWA. Создатель: Artur Alimhulov.
    Все данные хранятся только на телефоне (localStorage). */
 
-const VERSION = '1.8.1';
+const VERSION = '1.9';
 const STORE_KEY = 'uchet-raboty-v1';
 
 /* ===================== Дни ===================== */
@@ -156,6 +156,30 @@ const monthTitle = (mi) => `${MONTHS[L()][mi % 12]} ${Math.floor(mi / 12)}`;
 const periodTitle = (p) => `${ymd(p.start).d}–${ymd(p.end).d} ${MONTHS_GEN[L()][ymd(p.end).m - 1]}`;
 const parseClock = (v) => { if (!v) return null; const [h, m] = v.split(':').map(Number); return Number.isFinite(h) && Number.isFinite(m) ? h * 60 + m : null; };
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+
+/* ===================== WhatsApp ===================== */
+// Строки шапки отчёта: «Имя Фамилия», «BEM1», «WE1GS69»
+const headLines = () => (S.settings.header || '').split('\n').map((s) => s.trim()).filter(Boolean);
+/** Код бригады для «BEM1 Start» — вторая строка шапки. */
+const teamCode = () => { const h = headLines(); return h[1] || ''; };
+const waStatus = (word) => (teamCode() ? `${teamCode()} ${word}` : word);
+const miniReport = (d) => [fullD(d), ...headLines(), String(entry(d).points || 0)].join('\n');
+/** Открыть WhatsApp с готовым текстом — человек сам выбирает группу и жмёт «Отправить». */
+function openWhatsApp(text) {
+  const url = `https://wa.me/?text=${encodeURIComponent(text)}`;
+  const w = window.open(url, '_blank');
+  if (!w) location.href = url;
+}
+const nowMinutes = () => { const n = new Date(); return n.getHours() * 60 + n.getMinutes(); };
+/** «BEM1 Start» / «BEM1 Koniec»: ставим время начала/конца на сейчас и открываем WhatsApp. */
+function waStartEnd(which, word) {
+  if (!teamCode()) { toast(t('Сначала заполни «Шапку отчёта» в Настройках', 'Najpierw uzupełnij «Nagłówek raportu» w Ustawieniach')); return; }
+  const m = nowMinutes();
+  update(todayDay(), (x) => { x[which] = m; });
+  if (ui.day === todayDay()) refreshDay();
+  toast(`${which === 'start' ? t('Начало', 'Początek') : t('Конец', 'Koniec')}: ${clock(m)}`);
+  openWhatsApp(waStatus(word));
+}
 
 /* ===================== Отчёт ===================== */
 function buildReport(p) {
@@ -428,6 +452,10 @@ const ICONS = {
   clock: '<circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/>',
   note: '<path d="M6 3h9l4 4v13a1 1 0 0 1-1 1H6a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1z"/><path d="M9 10h6M9 14h6M9 18h3"/>',
   bell: '<path d="M6 8a6 6 0 0 1 12 0c0 7 3 9 3 9H3s3-2 3-9"/><path d="M10.3 21a1.9 1.9 0 0 0 3.4 0"/>',
+  chat: '<path d="M21 11.5a8.4 8.4 0 0 1-12.2 7.5L3 21l2-5.5A8.4 8.4 0 1 1 21 11.5z"/>',
+  play: '<path d="M7 4.5v15l12-7.5z"/>',
+  send: '<path d="M22 2 11 13"/><path d="M22 2 15 22l-4-9-9-4z"/>',
+  stop: '<rect x="6" y="6" width="12" height="12" rx="2"/>',
   money: '<rect x="2" y="6" width="20" height="12" rx="2"/><circle cx="12" cy="12" r="2.5"/><path d="M6 12h.01M18 12h.01"/>',
   list: '<path d="M9 6h11M9 12h11M9 18h11M4 6h.01M4 12h.01M4 18h.01"/>',
   palette: '<path d="M12 3a9 9 0 1 0 0 18c1.1 0 1.7-.8 1.7-1.7 0-.5-.2-.9-.5-1.2-.3-.3-.5-.7-.5-1.2 0-.9.8-1.7 1.7-1.7H16a5 5 0 0 0 5-5C21 6.6 17 3 12 3z"/><circle cx="7.5" cy="11" r="1"/><circle cx="10.5" cy="7" r="1"/><circle cx="15" cy="7.5" r="1"/>',
@@ -498,6 +526,13 @@ function renderDay() {
   return `
     ${navHead(weekdayName(d), `${dayMonth(d)} · ${rel}`, true)}
     ${d !== td ? `<button class="chip-btn" data-act="today">${ic('back', 16)} ${t('Вернуться к сегодня', 'Wróć do dziś')}</button>` : ''}
+
+    ${card('chat', 'WhatsApp', '',
+      `${d === td ? `<div class="btn-row wa-row">
+         <button class="btn tonal" data-act="wa-start">${ic('play', 18)} ${esc(waStatus('Start'))}</button>
+         <button class="btn tonal" data-act="wa-end">${ic('stop', 18)} ${esc(waStatus('Koniec'))}</button>
+       </div>` : ''}
+       <button class="btn tonal" data-act="wa-mini">${ic('send', 18)} ${t('Минирапорт за', 'Miniraport za')} ${shortD(d)}</button>`)}
 
     ${card('truck', t('Точки катеринга', 'Punkty cateringu'), `<span class="hint">× ${rate(S.rates.point)} zł</span>`,
       `<input class="num" data-field="points" inputmode="numeric" pattern="[0-9]*" placeholder="0" autocomplete="off" value="${x.points || ''}" aria-label="${t('Точки', 'Punkty')}">`)}
@@ -1020,6 +1055,13 @@ const actions = {
   'open-day'(el) { ui.day = Number(el.dataset.day); ui.tab = 0; render(true); },
   'm-minus'() { update(ui.day, (x) => { x.machines = Math.max(0, x.machines - 1); }); syncNum('machines'); refreshDay(); },
   'm-plus'() { update(ui.day, (x) => { x.machines += 1; }); syncNum('machines'); refreshDay(); },
+  'wa-start'() { waStartEnd('start', 'Start'); },
+  'wa-end'() { waStartEnd('end', 'Koniec'); },
+  'wa-mini'() {
+    if (!teamCode()) { toast(t('Сначала заполни «Шапку отчёта» в Настройках', 'Najpierw uzupełnij «Nagłówek raportu» w Ustawieniach')); return; }
+    if (!entry(ui.day).points) { toast(t('Сначала впиши точки за этот день', 'Najpierw wpisz punkty za ten dzień')); return; }
+    openWhatsApp(miniReport(ui.day));
+  },
   'clear-time'() { update(ui.day, (x) => { x.start = null; x.end = null; }); refreshDay(); },
   rep(el) {
     const k = el.dataset.k, o = S.report;
