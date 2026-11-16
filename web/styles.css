@@ -222,6 +222,7 @@ button:disabled { opacity: .45; cursor: default; }
   background: none; text-align: left; font-size: 15px; color: var(--text);
 }
 .trow.head { font-size: 12px; font-weight: 600; color: var(--text2); padding-top: 0; }
+.trow.noz { grid-template-columns: 1.5fr 1fr 1fr; } /* без колонки «Жабка» */
 .trow .dash { color: var(--outline); }
 .trow.today span:first-child { color: var(--primary); font-weight: 700; }
 .mono {

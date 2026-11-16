@@ -2,7 +2,7 @@
 /* Учёт работы — PWA. Создатель: Artur Alimhulov.
    Все данные хранятся только на телефоне (localStorage). */
 
-const VERSION = '2.1';
+const VERSION = '2.2';
 const STORE_KEY = 'uchet-raboty-v1';
 
 /* ===================== Дни ===================== */
@@ -44,7 +44,8 @@ const DEFAULTS = {
   entries: {},
   rates: { point: 2.9, machine: 35 },
   report: { points: true, machines: true, hours: false, polish: false },
-  settings: { lang: 'ru', palette: 0, theme: 'system', header: '', reminders: true, reminderMinute: 480, onboarded: false },
+  // zabka — раздел «Автоматы Жабки»: у новых пользователей выключен (Жабки делают немногие)
+  settings: { lang: 'ru', palette: 0, theme: 'system', header: '', reminders: true, reminderMinute: 480, onboarded: false, zabka: false },
   dismissed: {},
   installHidden: false,
   auth: { code: '', device: '', ok: false, name: '', reason: '', checkedAt: 0, lastOk: 0, expires: null, cfg: null },
@@ -67,6 +68,10 @@ function load() {
     Object.assign(s.rates, raw.rates || {});
     Object.assign(s.report, raw.report || {});
     Object.assign(s.settings, raw.settings || {});
+    // Обновление со старой версии: у кого уже записаны Жабки — раздел остаётся включённым
+    if (!raw.settings || raw.settings.zabka === undefined) {
+      s.settings.zabka = Object.values(raw.entries || {}).some((x) => x && x.machines > 0);
+    }
     Object.assign(s.dismissed, raw.dismissed || {});
     Object.assign(s.auth, raw.auth || {});
     Object.assign(s.cloud, raw.cloud || {});
@@ -90,8 +95,10 @@ const blank = () => ({ points: 0, machines: 0, start: null, end: null, note: '' 
 const entry = (e) => S.entries[iso(e)] || blank();
 const worked = (x) => { if (x.start == null || x.end == null) return 0; let d = x.end - x.start; if (d < 0) d += 1440; return d; };
 const isEmptyEntry = (x) => !x.points && !x.machines && x.start == null && x.end == null && !(x.note || '').trim();
-const isWork = (x) => x.points > 0 || x.machines > 0 || worked(x) > 0;
-const dayMoney = (x) => x.points * S.rates.point + x.machines * S.rates.machine;
+/** Включён ли раздел «Автоматы Жабки» (Настройки). Выключен — Жабки нигде не видны и не считаются. */
+const Z = () => !!S.settings.zabka;
+const isWork = (x) => x.points > 0 || (Z() && x.machines > 0) || worked(x) > 0;
+const dayMoney = (x) => x.points * S.rates.point + (Z() ? x.machines * S.rates.machine : 0);
 
 const sameEntry = (a, b) => a.points === b.points && a.machines === b.machines && a.start === b.start && a.end === b.end && (a.note || '') === (b.note || '');
 
@@ -128,7 +135,7 @@ function summarize(p) {
   for (let e = p.start; e <= p.end; e++) {
     const x = S.entries[iso(e)];
     if (!x) continue;
-    s.points += x.points; s.machines += x.machines; s.minutes += worked(x);
+    s.points += x.points; s.machines += Z() ? x.machines : 0; s.minutes += worked(x);
     if (isWork(x)) s.workDays++;
   }
   return s;
@@ -221,7 +228,10 @@ function waStartEnd(which, word) {
 
 /* ===================== Отчёт ===================== */
 function buildReport(p) {
-  const o = S.report, pl = o.polish, lang = pl ? 'pl' : 'ru';
+  const pl = S.report.polish, lang = pl ? 'pl' : 'ru';
+  // Жабки выключены — в отчёте их нет; если иначе ничего не осталось, показываем точки
+  const o = { ...S.report, machines: S.report.machines && Z() };
+  if (!o.points && !o.machines && !o.hours) o.points = true;
   const lines = [];
   const head = (S.settings.header || '').trim();
   if (head) { lines.push(head, ''); }
@@ -584,12 +594,12 @@ function renderDay() {
     ${card('truck', t('Точки катеринга', 'Punkty cateringu'), `<span class="hint">× ${rate(S.rates.point)} zł</span>`,
       `<input class="num" data-field="points" inputmode="numeric" pattern="[0-9]*" placeholder="0" autocomplete="off" value="${x.points || ''}" aria-label="${t('Точки', 'Punkty')}">`)}
 
-    ${card('store', t('Автоматы Жабки', 'Automaty Żabki'), `<span class="hint">× ${rate(S.rates.machine)} zł</span>`,
+    ${Z() ? card('store', t('Автоматы Жабки', 'Automaty Żabki'), `<span class="hint">× ${rate(S.rates.machine)} zł</span>`,
       `<div class="stepper">
         <button class="step" data-act="m-minus" aria-label="${t('Меньше', 'Mniej')}">${ic('minus', 22)}</button>
         <input class="num" data-field="machines" inputmode="numeric" pattern="[0-9]*" placeholder="0" autocomplete="off" value="${x.machines || ''}" aria-label="${t('Автоматы', 'Automaty')}">
         <button class="step" data-act="m-plus" aria-label="${t('Больше', 'Więcej')}">${ic('plus', 22)}</button>
-      </div>`)}
+      </div>`) : ''}
 
     ${card('clock', t('Часы работы', 'Godziny pracy'), `<span id="hours-pill">${hoursPill(x)}</span>`,
       `<div class="times">${timeTile('start', t('Начало', 'Początek'), x.start)}${timeTile('end', t('Конец', 'Koniec'), x.end)}</div>
@@ -624,11 +634,11 @@ function earnHtml(d) {
   return `<div class="hero">
     <div class="lbl2">${t('Заработок за день', 'Zarobek za dzień')}</div>
     <div class="big">${money(dayMoney(x))}</div>
-    <div class="small">${x.points} × ${rate(S.rates.point)} + ${x.machines} × ${rate(S.rates.machine)}</div>
+    <div class="small">${x.points} × ${rate(S.rates.point)}${Z() ? ` + ${x.machines} × ${rate(S.rates.machine)}` : ''}</div>
     <hr>
     <div class="row-between">
       <div><div class="small" style="font-weight:600">${t('К выплате за', 'Do wypłaty za')} ${periodTitle(p)}</div>
-        <div class="small">${s.points} ${t('точек', 'pkt')} · ${zabka}</div></div>
+        <div class="small">${s.points} ${t('точек', 'pkt')}${Z() ? ` · ${zabka}` : ''}</div></div>
       <div style="font-weight:700;font-size:17px;white-space:nowrap">${money(pay.total)}</div>
     </div>
   </div>`;
@@ -663,7 +673,7 @@ function renderCalendar() {
     cells += `<button class="${cls.join(' ')}" data-act="open-day" data-day="${d}">
       <b>${k + 1}</b>
       ${x && x.points ? `<span class="cp">${x.points}</span>` : ''}
-      ${x && x.machines ? `<span class="cm">Ż${x.machines}</span>` : ''}
+      ${Z() && x && x.machines ? `<span class="cm">Ż${x.machines}</span>` : ''}
       ${x && (x.note || '').trim() ? '<i class="dot"></i>' : ''}
     </button>`;
   }
@@ -671,7 +681,7 @@ function renderCalendar() {
   const halfCards = halves.map((p) => {
     const s = summarize(p);
     return card('calendar', periodTitle(p), `<b style="color:var(--primary);white-space:nowrap">${money(sumMoney(s))}</b>`,
-      `<p class="muted">${s.points} ${t('точек', 'punktów')} · ${s.machines} ${t('автоматов', 'automatów')} · ${hours(s.minutes)}</p>`);
+      `<p class="muted">${s.points} ${t('точек', 'punktów')}${Z() ? ` · ${s.machines} ${t('автоматов', 'automatów')}` : ''} · ${hours(s.minutes)}</p>`);
   }).join('');
 
   return `
@@ -680,7 +690,7 @@ function renderCalendar() {
     <div class="cal-wrap"><div class="cal-head">${heads}</div><div class="cal">${cells}</div></div>
     <div class="legend">
       <span><i style="background:var(--primary)"></i>${t('точки', 'punkty')}</span>
-      <span><i style="background:var(--tertiary)"></i>${t('Жабка', 'Żabka')}</span>
+      ${Z() ? `<span><i style="background:var(--tertiary)"></i>${t('Жабка', 'Żabka')}</span>` : ''}
       <span><i style="background:var(--error)"></i>${t('заметка', 'notatka')}</span>
     </div>
     </div>
@@ -706,9 +716,9 @@ function renderReport() {
 
   const payBody = `
     <div class="money-row"><span>${t('Точки', 'Punkty')} ${pay.points} × ${rate(S.rates.point)}</span><span>${money(pay.pointsMoney)}</span></div>
-    ${pay.paidNow ? `<div class="money-row"><span>${t('Жабка за месяц', 'Żabka za miesiąc')} ${pay.machines} × ${rate(S.rates.machine)}</span><span>${money(pay.machinesMoney)}</span></div>` : ''}
+    ${Z() && pay.paidNow ? `<div class="money-row"><span>${t('Жабка за месяц', 'Żabka za miesiąc')} ${pay.machines} × ${rate(S.rates.machine)}</span><span>${money(pay.machinesMoney)}</span></div>` : ''}
     <div class="total"><span style="font-weight:650">${t('Всего', 'Razem')}</span><b>${money(pay.total)}</b></div>
-    ${!pay.paidNow ? `<p class="muted small">${t(`Жабка оплачивается раз в месяц — войдёт в выплату за 16–${endDay}. Сейчас: ${pay.machines} авт. = ${money(pay.machinesMoney)}`,
+    ${Z() && !pay.paidNow ? `<p class="muted small">${t(`Жабка оплачивается раз в месяц — войдёт в выплату за 16–${endDay}. Сейчас: ${pay.machines} авт. = ${money(pay.machinesMoney)}`,
       `Żabka jest płatna raz w miesiącu — wejdzie do wypłaty za 16–${endDay}. Teraz: ${pay.machines} aut. = ${money(pay.machinesMoney)}`)}</p>` : ''}
     ${s.minutes > 0 ? `<p class="muted small">${t('Заработано в час', 'Zarobek na godzinę')}: ≈ ${money(sumMoney(s) / (s.minutes / 60))}</p>` : ''}`;
 
@@ -716,8 +726,8 @@ function renderReport() {
   const repBody = `
     <p class="muted">${t('Что включить', 'Co uwzględnić')}</p>
     <div class="chips">
-      ${chip('rep', 'points', t('Точки', 'Punkty'), o.points)}
-      ${chip('rep', 'machines', t('Жабка', 'Żabka'), o.machines)}
+      ${chip('rep', 'points', t('Точки', 'Punkty'), o.points || (!o.hours && !(o.machines && Z())))}
+      ${Z() ? chip('rep', 'machines', t('Жабка', 'Żabka'), o.machines) : ''}
       ${chip('rep', 'hours', t('Часы', 'Godziny'), o.hours)}
     </div>
     <p class="muted">${t('Язык отчёта', 'Język raportu')}</p>
@@ -735,17 +745,17 @@ function renderReport() {
 
   const rows = daysOf(p).map((e) => {
     const x = entry(e), dash = '<span class="dash">—</span>';
-    return `<button class="trow ${e === td ? 'today' : ''}" data-act="open-day" data-day="${e}">
+    return `<button class="trow ${Z() ? '' : 'noz'} ${e === td ? 'today' : ''}" data-act="open-day" data-day="${e}">
       <span>${shortD(e)} ${weekdayShort(e)}</span>
-      <span>${x.points || dash}</span><span>${x.machines || dash}</span><span>${worked(x) ? hoursShort(worked(x)) : dash}</span>
+      <span>${x.points || dash}</span>${Z() ? `<span>${x.machines || dash}</span>` : ''}<span>${worked(x) ? hoursShort(worked(x)) : dash}</span>
     </button>`;
   }).join('');
   const daysBody = `
     <div>
-      <div class="trow head"><span>${t('Дата', 'Data')}</span><span>${t('Точки', 'Punkty')}</span><span>${t('Жабка', 'Żabka')}</span><span>${t('Часы', 'Godziny')}</span></div>
+      <div class="trow head ${Z() ? '' : 'noz'}"><span>${t('Дата', 'Data')}</span><span>${t('Точки', 'Punkty')}</span>${Z() ? `<span>${t('Жабка', 'Żabka')}</span>` : ''}<span>${t('Часы', 'Godziny')}</span></div>
       ${rows}
     </div>
-    <p style="margin:0;font-weight:650;font-size:15px">${t('Итого', 'Razem')}: ${s.points} ${t('точек', 'punktów')}, ${s.machines} ${t('автоматов', 'automatów')}, ${hours(s.minutes)}</p>`;
+    <p style="margin:0;font-weight:650;font-size:15px">${t('Итого', 'Razem')}: ${s.points} ${t('точек', 'punktów')}${Z() ? `, ${s.machines} ${t('автоматов', 'automatów')}` : ''}, ${hours(s.minutes)}</p>`;
 
   return `
     ${navHead(periodTitle(p), `${t('Период выплаты', 'Okres rozliczeniowy')} · ${ymd(p.end).y}`)}
@@ -753,7 +763,8 @@ function renderReport() {
     ${progress}
     <div class="tiles">
       ${tile(t('Точек', 'Punktów'), s.points)}
-      ${tile(t('Автоматов', 'Automatów'), s.machines, monthMachines != null ? `${t('за месяц', 'za miesiąc')}: ${monthMachines}` : '')}
+      ${Z() ? tile(t('Автоматов', 'Automatów'), s.machines, monthMachines != null ? `${t('за месяц', 'za miesiąc')}: ${monthMachines}` : '')
+        : tile(t('К выплате', 'Do wypłaty'), money(pay.total))}
       ${tile(t('Часов', 'Godzin'), hoursShort(s.minutes))}
       ${tile(t('Рабочих дней', 'Dni pracy'), s.workDays)}
     </div>
@@ -798,7 +809,8 @@ function renderStats() {
     </div>
     <div class="tiles">
       ${tile(t('Точек', 'Punktów'), s.points, money(s.points * S.rates.point))}
-      ${tile(t('Автоматов', 'Automatów'), s.machines, money(s.machines * S.rates.machine))}
+      ${Z() ? tile(t('Автоматов', 'Automatów'), s.machines, money(s.machines * S.rates.machine))
+        : tile(t('Лучший день', 'Najlepszy dzień'), bestV || '—', bestV > 0 ? shortD(days[bestI]) : '')}
       ${tile(t('Рабочих дней', 'Dni pracy'), s.workDays)}
       ${tile(t('Точек в день', 'Punktów dziennie'), num(avgP, 1))}
       ${tile(t('Часов', 'Godzin'), hours(s.minutes), avgMin ? `≈ ${hours(avgMin)} ${t('в день', 'dziennie')}` : '')}
@@ -809,7 +821,7 @@ function renderStats() {
     ${card('chart', t('Точки по дням', 'Punkty dziennie'), '',
       bars(pts, 'var(--primary)', 130) +
       (bestV > 0 ? `<p class="muted">${t('Лучший день', 'Najlepszy dzień')}: ${shortD(days[bestI])} — ${bestV}</p>` : ''))}
-    ${card('store', t('Жабка по дням', 'Żabka dziennie'), '', bars(mach, 'var(--tertiary)', 90))}
+    ${Z() ? card('store', t('Жабка по дням', 'Żabka dziennie'), '', bars(mach, 'var(--tertiary)', 90)) : ''}
     </div>`;
 }
 
@@ -843,11 +855,15 @@ function renderSettings() {
         'Jeśli w notatce z danego dnia coś jest, następnego dnia po wybranej godzinie po otwarciu aplikacji pojawi się przypomnienie z jej treścią.')}</p>
        <div class="row-between"><span>${t('Время напоминания', 'Godzina przypomnienia')}</span>
          <label class="time-btn">${clock(st.reminderMinute)}<input type="time" data-reminder-time value="${clock(st.reminderMinute)}" ${st.reminders ? '' : 'disabled'}></label></div>`)}
+    ${card('store', t('Автоматы Жабки', 'Automaty Żabki'),
+      `<label class="switch"><input type="checkbox" data-check="zabka" ${st.zabka ? 'checked' : ''} aria-label="${t('Автоматы Жабки', 'Automaty Żabki')}"><span></span></label>`,
+      `<p class="muted">${t('Включи, если делаешь Жабки. Выключено — Жабок нет на экране «День», в календаре, итогах и отчёте, считаются только точки. Уже записанные Жабки не удаляются.',
+        'Włącz, jeśli robisz Żabki. Wyłączone — Żabek nie ma na ekranie «Dzień», w kalendarzu, podsumowaniu i raporcie, liczą się tylko punkty. Zapisane Żabki nie są usuwane.')}</p>`)}
     ${card('money', t('Ставки', 'Stawki'), '',
       `<label class="lbl">${t('За 1 точку, zł', 'Za 1 punkt, zł')}</label>
        <input class="field" data-field="rate-point" inputmode="decimal" value="${rate(S.rates.point)}">
-       <label class="lbl">${t('За 1 автомат Жабки, zł', 'Za 1 automat Żabki, zł')}</label>
-       <input class="field" data-field="rate-machine" inputmode="decimal" value="${rate(S.rates.machine)}">`)}
+       ${Z() ? `<label class="lbl">${t('За 1 автомат Жабки, zł', 'Za 1 automat Żabki, zł')}</label>
+       <input class="field" data-field="rate-machine" inputmode="decimal" value="${rate(S.rates.machine)}">` : ''}`)}
     ${isOwner() ? card('sync', t('Синхронизация', 'Synchronizacja'), '',
       `<p class="muted">${t('Ты владелец: записи, ставки и шапка отчёта одинаковые на всех твоих устройствах. Язык и тема — у каждого устройства свои.',
         'Jesteś właścicielem: wpisy, stawki i nagłówek są takie same na wszystkich Twoich urządzeniach. Język i motyw — osobno na każdym.')}</p>
@@ -963,8 +979,8 @@ function renderSheet() {
   $sheet.innerHTML = `<div class="sheet-bg"><div class="sheet">
     <img class="logo" src="icons/icon-192.png" alt="">
     <h2>${t('Учёт работы', 'Ewidencja pracy')}</h2>
-    <p class="muted">${t('Точки катеринга, автоматы Жабки, часы и готовый отчёт за 15 дней. Все данные хранятся только на твоём телефоне.',
-      'Punkty cateringu, automaty Żabki, godziny i gotowy raport za 15 dni. Wszystkie dane są tylko w Twoim telefonie.')}</p>
+    <p class="muted">${t('Точки катеринга, часы и готовый отчёт за 15 дней. Делаешь Жабки — включи их в Настройках. Все данные хранятся только на твоём телефоне.',
+      'Punkty cateringu, godziny i gotowy raport za 15 dni. Robisz Żabki — włącz je w Ustawieniach. Wszystkie dane są tylko w Twoim telefonie.')}</p>
     <div class="seg"><button class="${st.lang === 'ru' ? 'on' : ''}" data-act="lang" data-v="ru">Русский</button><button class="${st.lang === 'pl' ? 'on' : ''}" data-act="lang" data-v="pl">Polski</button></div>
     <label class="lbl">${t('Шапка отчёта — будет в начале каждого отчёта', 'Nagłówek raportu — będzie na początku każdego raportu')}</label>
     <textarea class="field" data-field="header" rows="3" placeholder="${t('Имя Фамилия&#10;Код&#10;Номер', 'Imię Nazwisko&#10;Kod&#10;Numer')}">${esc(st.header)}</textarea>
@@ -1136,7 +1152,7 @@ const actions = {
   'clear-time'() { update(ui.day, (x) => { x.start = null; x.end = null; }); refreshDay(); },
   rep(el) {
     const k = el.dataset.k, o = S.report;
-    const others = ['points', 'machines', 'hours'].filter((n) => n !== k).some((n) => o[n]);
+    const others = ['points', 'machines', 'hours'].filter((n) => n !== k && (n !== 'machines' || Z())).some((n) => o[n]);
     if (o[k] && !others) return; // хотя бы один пункт должен остаться
     o[k] = !o[k]; save(); render();
   },
@@ -1248,6 +1264,7 @@ document.addEventListener('change', (ev) => {
   if (el.dataset.time !== undefined) onTime(el);
   if (el.dataset.date !== undefined && el.value) { ui.day = fromIso(el.value); render(true); }
   if (el.dataset.check === 'reminders') { S.settings.reminders = el.checked; save(); render(); }
+  if (el.dataset.check === 'zabka') { S.settings.zabka = el.checked; save(); render(); }
   if (el.dataset.reminderTime !== undefined) {
     const m = parseClock(el.value);
     if (m != null) { S.settings.reminderMinute = m; save(); render(); }
