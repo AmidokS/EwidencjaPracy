@@ -26,6 +26,9 @@
     .acts { display: flex; flex-wrap: wrap; gap: 8px; }
     .acts button { border: 0; border-radius: 12px; padding: 8px 12px; font-size: 14px; font-weight: 600; background: var(--sc); color: var(--on-sc); }
     .acts button.danger { background: var(--error-bg); color: var(--error); }
+    .chips { display: flex; flex-wrap: wrap; gap: 8px; }
+    .chips button { border: 0; border-radius: 999px; padding: 7px 12px; font-size: 13px; font-weight: 600; background: var(--sc); color: var(--on-sc); }
+    .chips button.on { background: var(--primary); color: var(--on-primary); }
     .err { color: var(--error); font-weight: 600; font-size: 14px; margin: 0; min-height: 18px; }
     .check { display: flex; align-items: center; gap: 10px; font-size: 15px; }
     .check input { width: 20px; height: 20px; accent-color: var(--primary); }
@@ -60,6 +63,7 @@
   let cfg = null;
   let created = null;
   let query = '';
+  let filter = 'all';
   let settingsOpen = false;
 
   // Тема как в приложении
@@ -164,7 +168,7 @@
   function personHtml(it) {
     const tries = it.attempts || [];
     const where = it.platform ? `${PLATFORM[it.platform] || esc(it.platform)}${it.version ? `, версия ${esc(it.version)}` : ''}` : '—';
-    const old = cfg && cfg.apk && cfg.apk.name && it.platform === 'android' && it.version && it.version !== cfg.apk.name;
+    const old = isOld(it);
     return `<div class="person">
       <div class="top"><span class="name">${esc(it.name)}</span>${status(it)}</div>
       <div class="code">${esc(it.code)}</div>
@@ -192,9 +196,28 @@
     </div>`;
   }
 
+  // Старая версия APK: номер версии меньше, чем указан в «Обновлении Android»
+  // «1.6» → 1006000, «1.7.2» → 1007002 — чтобы сравнивать версии числами
+  const verNum = (v) => { const p = String(v || '').split('.').map((x) => parseInt(x, 10) || 0); return (p[0] || 0) * 1e6 + (p[1] || 0) * 1e3 + (p[2] || 0); };
+  const isOld = (it) => !!(cfg && cfg.apk && cfg.apk.name && it.platform === 'android' && it.version && verNum(it.version) < verNum(cfg.apk.name));
+  const WEEK = 7 * 24 * 3600 * 1000;
+  const FILTERS = [
+    ['all', 'Все', () => true],
+    ['old', 'Старая версия', isOld],
+    ['idle', 'Не заходили 7+ дней', (it) => !!it.device && (!it.lastSeen || Date.now() - it.lastSeen > WEEK)],
+    ['wait', 'Не активированы', (it) => !it.device && it.active],
+    ['off', 'Отключены / истёк срок', (it) => !it.owner && (!it.active || isExpired(it))],
+  ];
+  function chipsHtml() {
+    return `<div class="chips">${FILTERS.map(([k, label, fn]) => {
+      const n = items.filter(fn).length;
+      return `<button data-f="${k}" class="${filter === k ? 'on' : ''}">${label} · ${n}</button>`;
+    }).join('')}</div>`;
+  }
   function listHtml() {
     const q = query.trim().toLowerCase();
-    const shown = q ? items.filter((it) => [it.name, it.note, it.code].some((v) => String(v || '').toLowerCase().includes(q))) : items;
+    const fn = (FILTERS.find((f) => f[0] === filter) || FILTERS[0])[2];
+    const shown = items.filter(fn).filter((it) => !q || [it.name, it.note, it.code].some((v) => String(v || '').toLowerCase().includes(q)));
     if (!items.length) return '<p class="muted">Пока нет ни одного кода. Создай сначала код для себя.</p>';
     if (!shown.length) return '<p class="muted">Никого не найдено.</p>';
     return shown.map(personHtml).join('');
@@ -289,10 +312,18 @@
         <b>Срок</b> — код сам перестанет работать после выбранной даты.<br>
         <b>Сменить код</b> — старый код перестаёт работать, человек получает новый.<br>
         <b>Отвязать телефон</b> — если человек сменил телефон: он вводит тот же код на новом.</p>
+      ${items.length ? `<div id="chips">${chipsHtml()}</div>` : ''}
       ${items.length > 3 ? `<input class="field" id="search" type="search" placeholder="Поиск по имени, заметке или коду" value="${esc(query)}">` : ''}
       <div id="list" style="display:flex;flex-direction:column;gap:12px">${listHtml()}</div>`;
 
     document.getElementById('settings').ontoggle = (e) => { settingsOpen = e.target.open; };
+    const chips = document.getElementById('chips');
+    if (chips) chips.onclick = (e) => {
+      const b = e.target.closest('[data-f]'); if (!b) return;
+      filter = b.dataset.f;
+      chips.innerHTML = chipsHtml();
+      document.getElementById('list').innerHTML = listHtml();
+    };
     const search = document.getElementById('search');
     if (search) search.oninput = () => { query = search.value; document.getElementById('list').innerHTML = listHtml(); };
     document.getElementById('logout').onclick = () => { sessionStorage.removeItem('admin-pass'); pass = ''; created = null; renderLogin(); };

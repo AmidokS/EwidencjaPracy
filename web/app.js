@@ -2,7 +2,7 @@
 /* Учёт работы — PWA. Создатель: Artur Alimhulov.
    Все данные хранятся только на телефоне (localStorage). */
 
-const VERSION = '1.7.2';
+const VERSION = '1.8';
 const STORE_KEY = 'uchet-raboty-v1';
 
 /* ===================== Дни ===================== */
@@ -50,6 +50,7 @@ const DEFAULTS = {
   auth: { code: '', device: '', ok: false, name: '', reason: '', checkedAt: 0, lastOk: 0, expires: null, cfg: null },
   cloud: { on: false, at: 0, dirty: false },
   msgHidden: 0,
+  reportHidden: 0,
 };
 
 let S = load();
@@ -68,6 +69,7 @@ function load() {
     Object.assign(s.cloud, raw.cloud || {});
     s.installHidden = !!raw.installHidden;
     s.msgHidden = raw.msgHidden || 0;
+    s.reportHidden = raw.reportHidden || 0;
   }
   // Обновление со старой версии: считаем последнюю проверку успешной, чтобы не закрыть приложение сразу
   if (s.auth.ok && !s.auth.lastOk) s.auth.lastOk = s.auth.checkedAt || Date.now();
@@ -796,6 +798,13 @@ function renderTop() {
       html += `<div class="banner">${ic('bell', 20)}<div class="bt"><b>${t('Код скоро закончится', 'Kod wkrótce wygaśnie')}</b><p>${t('Действует до', 'Ważny do')} ${fullDate(S.auth.expires).slice(0, 10)}</p></div></div>`;
     }
   }
+  // 15-го и в последний день месяца — напоминание отправить отчёт
+  const td = todayDay(), cur = payPeriod(td);
+  if (cur.end === td && S.reportHidden !== td) {
+    html += `<div class="banner">${ic('bell', 20)}<div class="bt"><b>${t('Сегодня конец периода', 'Dziś koniec okresu')} ${periodTitle(cur)}</b><p>${t('Не забудь отправить отчёт.', 'Nie zapomnij wysłać raportu.')}</p></div>
+      <button data-act="open-report">${t('Отчёт', 'Raport')}</button>
+      <button class="x" data-act="hide-report" aria-label="${t('Закрыть', 'Zamknij')}">${ic('x', 18)}</button></div>`;
+  }
   for (const d of dueReminders()) {
     const x = entry(d);
     html += `<div class="banner">${ic('bell', 20)}<div class="bt"><b>${t('Заметка за', 'Notatka z')} ${shortD(d)}</b><p>${esc(x.note)}</p></div>
@@ -1055,6 +1064,8 @@ const actions = {
   dismiss(el) { S.dismissed[iso(Number(el.dataset.day))] = true; save(); renderTop(); },
   'hide-install'() { S.installHidden = true; save(); renderTop(); },
   async install() { if (!installEvent) return; installEvent.prompt(); try { await installEvent.userChoice; } catch (e) { /* ignore */ } installEvent = null; render(); },
+  'open-report'() { ui.tab = 2; ui.period = periodIndex(payPeriod(todayDay())); render(true); },
+  'hide-report'() { S.reportHidden = todayDay(); save(); renderTop(); },
   'hide-msg'(el) { S.msgHidden = Number(el.dataset.id); save(); renderTop(); },
   async 'offline-retry'(el) {
     el.disabled = true;
