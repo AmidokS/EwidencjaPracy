@@ -2,7 +2,7 @@
 /* Учёт работы — PWA. Создатель: Artur Alimhulov.
    Все данные хранятся только на телефоне (localStorage). */
 
-const VERSION = '2.2';
+const VERSION = '2.3';
 const STORE_KEY = 'uchet-raboty-v1';
 
 /* ===================== Дни ===================== */
@@ -203,14 +203,17 @@ function openWhatsApp(text) {
 const nowMinutes = () => { const n = new Date(); return n.getHours() * 60 + n.getMinutes(); };
 /**
  * «BEM1 Start» / «BEM1 Koniec»: ставим время начала/конца на сейчас и открываем WhatsApp.
- * Смена через полночь: если до полудня сегодня начала нет, а вчера смена начата и не закончена — «Koniec» идёт во вчерашний день.
+ * Время идёт в тот день, который открыт: сегодня или завтра (смена с 22:00 считается за следующий день —
+ * вечером открываешь завтрашний день и жмёшь Start там).
+ * Смена через полночь: если на сегодня до полудня начала нет, а вчера смена начата и не закончена — «Koniec» идёт во вчерашний день.
  * Если время уже стоит — спрашиваем, заменить ли (чтобы случайное повторное нажатие его не испортило).
  */
 function waStartEnd(which, word) {
   if (!teamCode()) { toast(t('Сначала заполни «Шапку отчёта» в Настройках', 'Najpierw uzupełnij «Nagłówek raportu» w Ustawieniach')); return; }
   const m = nowMinutes();
-  let day = todayDay();
-  if (which === 'end' && m < 12 * 60 && entry(day).start == null) {
+  const td = todayDay();
+  let day = ui.day === td + 1 ? td + 1 : td;
+  if (day === td && which === 'end' && m < 12 * 60 && entry(day).start == null) {
     const y = entry(day - 1);
     if (y.start != null && y.end == null) day -= 1;
   }
@@ -222,7 +225,7 @@ function waStartEnd(which, word) {
   }
   update(day, (x) => { x[which] = m; });
   if (ui.day === day) refreshDay();
-  toast(`${label}${day !== todayDay() ? ` (${shortD(day)})` : ''}: ${clock(m)}`);
+  toast(`${label}${day !== td ? ` (${shortD(day)})` : ''}: ${clock(m)}`);
   openWhatsApp(waStatus(word));
 }
 
@@ -585,7 +588,7 @@ function renderDay() {
 
     <div class="col">
     ${card('chat', 'WhatsApp', '',
-      `${d === td ? `<div class="btn-row wa-row">
+      `${d === td || d === td + 1 ? `<div class="btn-row wa-row">
          <button class="btn tonal" data-act="wa-start">${ic('play', 18)} ${esc(waStatus('Start'))}</button>
          <button class="btn tonal" data-act="wa-end">${ic('stop', 18)} ${esc(waStatus('Koniec'))}</button>
        </div>` : ''}
