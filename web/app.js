@@ -2,7 +2,7 @@
 /* Учёт работы — PWA. Создатель: Artur Alimhulov.
    Все данные хранятся только на телефоне (localStorage). */
 
-const VERSION = '1.8';
+const VERSION = '1.8.1';
 const STORE_KEY = 'uchet-raboty-v1';
 
 /* ===================== Дни ===================== */

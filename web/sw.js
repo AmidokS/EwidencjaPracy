@@ -1,6 +1,6 @@
 // Офлайн-работа: все файлы приложения хранятся в кеше телефона.
 // При каждом запуске кеш тихо обновляется из сети, если она есть.
-const CACHE = 'uchet-1.8';
+const CACHE = 'uchet-1.8.1';
 const FILES = [
   './',
   './index.html',
@@ -30,6 +30,8 @@ self.addEventListener('activate', (e) => {
 
 self.addEventListener('fetch', (e) => {
   if (e.request.method !== 'GET' || new URL(e.request.url).origin !== location.origin) return;
+  // Страница управления всегда берётся из сети — чтобы сразу видеть новую версию
+  if (new URL(e.request.url).pathname.endsWith('/admin.html')) return;
   e.respondWith(
     caches.open(CACHE).then(async (cache) => {
       const cached = await cache.match(e.request, { ignoreSearch: true });
