@@ -2,7 +2,7 @@
 /* Учёт работы — PWA. Создатель: Artur Alimhulov.
    Все данные хранятся только на телефоне (localStorage). */
 
-const VERSION = '1.9.1';
+const VERSION = '2.0';
 const STORE_KEY = 'uchet-raboty-v1';
 
 /* ===================== Дни ===================== */
@@ -51,6 +51,9 @@ const DEFAULTS = {
   cloud: { on: false, at: 0, dirty: false },
   msgHidden: 0,
   reportHidden: 0,
+  // Синхронизация между устройствами (только у владельца). since — метка сервера с прошлого раза,
+  // dirty — дни, изменённые здесь и ещё не отправленные, deleted — когда день был очищен.
+  sync: { since: 0, dirty: {}, deleted: {}, metaU: 0, metaDirty: false, at: 0 },
 };
 
 let S = load();
@@ -67,6 +70,7 @@ function load() {
     Object.assign(s.dismissed, raw.dismissed || {});
     Object.assign(s.auth, raw.auth || {});
     Object.assign(s.cloud, raw.cloud || {});
+    Object.assign(s.sync, raw.sync || {});
     s.installHidden = !!raw.installHidden;
     s.msgHidden = raw.msgHidden || 0;
     s.reportHidden = raw.reportHidden || 0;
@@ -89,14 +93,34 @@ const isEmptyEntry = (x) => !x.points && !x.machines && x.start == null && x.end
 const isWork = (x) => x.points > 0 || x.machines > 0 || worked(x) > 0;
 const dayMoney = (x) => x.points * S.rates.point + x.machines * S.rates.machine;
 
+const sameEntry = (a, b) => a.points === b.points && a.machines === b.machines && a.start === b.start && a.end === b.end && (a.note || '') === (b.note || '');
+
 function update(e, fn) {
   const k = iso(e);
   const before = entry(e);
   const x = { ...before };
   fn(x);
+  if (sameEntry(x, before)) return;
   if (x.note !== before.note) delete S.dismissed[k];
-  if (isEmptyEntry(x)) delete S.entries[k]; else S.entries[k] = x;
+  const now = Date.now();
+  if (isEmptyEntry(x)) {
+    delete S.entries[k];
+    if (isOwner()) S.sync.deleted[k] = now;
+  } else {
+    x.u = now; // когда изменено — чтобы при синхронизации победило более позднее
+    S.entries[k] = x;
+    delete S.sync.deleted[k];
+  }
+  if (isOwner()) { S.sync.dirty[k] = 1; syncSoon(); }
   save();
+}
+
+/** Ставки или шапка изменились — у владельца отправим их на другие устройства. */
+function metaChanged() {
+  if (!isOwner()) return;
+  S.sync.metaU = Date.now();
+  S.sync.metaDirty = true;
+  syncSoon();
 }
 
 function summarize(p) {
@@ -322,6 +346,7 @@ async function checkAccess(force) {
       save();
       if (wasOffline) $sheet.innerHTML = '';
       render();
+      syncNow();
     }
   } catch (e) { /* нет интернета — работаем как обычно */ }
 }
@@ -332,6 +357,87 @@ function acceptServer(r) {
   if (r.name) S.auth.name = r.name;
   S.auth.expires = r.expires || null;
   if (r.cfg) S.auth.cfg = r.cfg;
+  S.auth.owner = !!r.owner;
+}
+
+/* ===================== Синхронизация владельца ===================== */
+/* Только у владельца: записи, ставки и шапка одинаковые на всех его устройствах.
+   Один и тот же день изменён на двух устройствах — остаётся более позднее изменение. */
+const isOwner = () => !!(AUTH_API && S.auth.ok && S.auth.owner);
+let syncBusy = false, syncTimer = null, syncedOnce = false;
+
+function syncSoon(ms = 4000) {
+  if (!isOwner()) return;
+  clearTimeout(syncTimer);
+  syncTimer = setTimeout(() => syncNow(), ms);
+}
+
+async function syncNow() {
+  if (!isOwner() || syncBusy) return false;
+  syncBusy = true;
+  const z = S.sync;
+  // Первый раз за запуск отправляем все дни целиком — так ничего не потеряется, даже если раньше что-то не дошло
+  const all = !syncedOnce || !z.since;
+  const keys = all ? [...new Set([...Object.keys(S.entries), ...Object.keys(z.deleted)])] : Object.keys(z.dirty);
+  const days = {};
+  for (const k of keys) {
+    const x = S.entries[k];
+    if (x) days[k] = { p: x.points || 0, m: x.machines || 0, s: x.start ?? null, e: x.end ?? null, n: x.note || '', u: x.u || 1 };
+    else if (z.deleted[k]) days[k] = { del: 1, u: z.deleted[k] };
+  }
+  const sendMeta = all || z.metaDirty;
+  const meta = sendMeta ? { rates: S.rates, header: S.settings.header || '', u: z.metaU || 1 } : null;
+  // Снимаем отметку «не отправлено» заранее: если за время запроса день снова изменят, отметка встанет снова
+  const pending = Object.keys(z.dirty);
+  z.dirty = {};
+  const metaWas = z.metaDirty;
+  z.metaDirty = false;
+  try {
+    const r = await api('/sync', { code: S.auth.code, device: deviceId(), since: z.since || 0, days, meta });
+    if (!r || !r.ok) throw new Error('sync');
+    let changedUi = false;
+    for (const [k, d] of Object.entries(r.days || {})) {
+      const loc = S.entries[k];
+      const locU = loc ? (loc.u || 1) : (z.deleted[k] || 0);
+      if (d.u < locU) continue; // здесь изменено позже — оставляем своё
+      if (d.del) {
+        if (loc) { delete S.entries[k]; changedUi = true; }
+        z.deleted[k] = d.u;
+      } else {
+        const nx = { points: d.p || 0, machines: d.m || 0, start: d.s ?? null, end: d.e ?? null, note: d.n || '', u: d.u };
+        if (!loc || !sameEntry(loc, nx)) changedUi = true;
+        S.entries[k] = nx;
+        delete z.deleted[k];
+      }
+    }
+    if (r.meta && r.meta.u >= (z.metaU || 0)) {
+      const rt = r.meta.rates || {};
+      if (rt.point > 0 && rt.machine > 0 && (rt.point !== S.rates.point || rt.machine !== S.rates.machine)) {
+        S.rates = { point: rt.point, machine: rt.machine }; changedUi = true;
+      }
+      if (typeof r.meta.header === 'string' && r.meta.header !== S.settings.header) {
+        S.settings.header = r.meta.header; changedUi = true;
+      }
+      z.metaU = r.meta.u;
+    }
+    z.since = r.now;
+    z.at = Date.now();
+    syncedOnce = true;
+    save();
+    // Не перерисовываем, пока человек что-то печатает — иначе собьётся ввод
+    const a = document.activeElement;
+    const typing = a && (a.tagName === 'INPUT' || a.tagName === 'TEXTAREA');
+    if (changedUi && !typing) render();
+    else if (ui.tab === 4 && !typing) render();
+    return true;
+  } catch (e) {
+    for (const k of pending) z.dirty[k] = 1;
+    if (metaWas) z.metaDirty = true;
+    save();
+    return false;
+  } finally {
+    syncBusy = false;
+  }
 }
 
 /* Без связи с сервером дольше, чем разрешил владелец, — просим подключиться к интернету */
@@ -393,6 +499,7 @@ const ICONS = {
   bell: '<path d="M6 8a6 6 0 0 1 12 0c0 7 3 9 3 9H3s3-2 3-9"/><path d="M10.3 21a1.9 1.9 0 0 0 3.4 0"/>',
   chat: '<path d="M21 11.5a8.4 8.4 0 0 1-12.2 7.5L3 21l2-5.5A8.4 8.4 0 1 1 21 11.5z"/>',
   play: '<path d="M7 4.5v15l12-7.5z"/>',
+  sync: '<path d="M20 11a8 8 0 0 0-14.3-4.9L4 8"/><path d="M4 3v5h5"/><path d="M4 13a8 8 0 0 0 14.3 4.9L20 16"/><path d="M20 21v-5h-5"/>',
   send: '<path d="M22 2 11 13"/><path d="M22 2 15 22l-4-9-9-4z"/>',
   stop: '<rect x="6" y="6" width="12" height="12" rx="2"/>',
   money: '<rect x="2" y="6" width="20" height="12" rx="2"/><circle cx="12" cy="12" r="2.5"/><path d="M6 12h.01M18 12h.01"/>',
@@ -713,7 +820,8 @@ function renderSettings() {
        <div class="seg">${seg('theme', 'system', t('Как в системе', 'Systemowy'), st.theme === 'system')}${seg('theme', 'light', t('Светлая', 'Jasny'), st.theme === 'light')}${seg('theme', 'dark', t('Тёмная', 'Ciemny'), st.theme === 'dark')}</div>`)}
     ${card('doc', t('Шапка отчёта', 'Nagłówek raportu'), '',
       `<textarea class="field" data-field="header" rows="3" placeholder="${t('Имя Фамилия&#10;Код&#10;Номер', 'Imię Nazwisko&#10;Kod&#10;Numer')}">${esc(st.header)}</textarea>
-       <p class="muted small">${t('Эти строки стоят в начале каждого отчёта.', 'Te linie są na początku każdego raportu.')}</p>`)}
+       <p class="muted small">${t('Эти строки стоят в начале каждого отчёта и в минирапорте. Вторая строка — код для «Start» / «Koniec» в WhatsApp.',
+         'Te linie są na początku każdego raportu i w miniraporcie. Druga linia to kod do «Start» / «Koniec» w WhatsApp.')}</p>`)}
     ${card('bell', t('Напоминание о заметках', 'Przypomnienie o notatkach'),
       `<label class="switch"><input type="checkbox" data-check="reminders" ${st.reminders ? 'checked' : ''} aria-label="${t('Напоминания', 'Przypomnienia')}"><span></span></label>`,
       `<p class="muted">${t('Если в заметке за день что-то записано, на следующий день после выбранного времени при открытии приложения появится напоминание с её текстом.',
@@ -725,6 +833,11 @@ function renderSettings() {
        <input class="field" data-field="rate-point" inputmode="decimal" value="${rate(S.rates.point)}">
        <label class="lbl">${t('За 1 автомат Жабки, zł', 'Za 1 automat Żabki, zł')}</label>
        <input class="field" data-field="rate-machine" inputmode="decimal" value="${rate(S.rates.machine)}">`)}
+    ${isOwner() ? card('sync', t('Синхронизация', 'Synchronizacja'), '',
+      `<p class="muted">${t('Ты владелец: записи, ставки и шапка отчёта одинаковые на всех твоих устройствах. Язык и тема — у каждого устройства свои.',
+        'Jesteś właścicielem: wpisy, stawki i nagłówek są takie same na wszystkich Twoich urządzeniach. Język i motyw — osobno na każdym.')}</p>
+       <p class="muted small">${t('Последняя синхронизация', 'Ostatnia synchronizacja')}: ${S.sync.at ? fullDate(S.sync.at) : '—'}${Object.keys(S.sync.dirty).length || S.sync.metaDirty ? ` · ${t('есть неотправленное', 'są niewysłane zmiany')}` : ''}</p>
+       <button class="btn tonal" data-act="sync-now">${ic('sync', 18)} ${t('Синхронизировать сейчас', 'Synchronizuj teraz')}</button>`) : ''}
     <div class="footer">
       <div class="c1">${t('Создатель', 'Twórca')}</div>
       <div class="c2">Artur Alimhulov</div>
@@ -1032,6 +1145,7 @@ const actions = {
         $sheet.innerHTML = '';
         render();
         toast(`${t('Добро пожаловать', 'Witaj')}${r.name ? `, ${r.name}` : ''}!`);
+        syncNow(); // владелец на новом устройстве сразу получит свои записи
         return;
       }
       err.textContent = authMessage((r && r.reason) || 'invalid');
@@ -1049,6 +1163,12 @@ const actions = {
   'open-report'() { ui.tab = 2; ui.period = periodIndex(payPeriod(todayDay())); render(true); },
   'hide-report'() { S.reportHidden = todayDay(); save(); renderTop(); },
   'hide-msg'(el) { S.msgHidden = Number(el.dataset.id); save(); renderTop(); },
+  async 'sync-now'(el) {
+    el.disabled = true;
+    const ok = await syncNow();
+    toast(ok ? t('Синхронизировано', 'Zsynchronizowano') : t('Нет связи с сервером', 'Brak połączenia z serwerem'));
+    render();
+  },
   async 'offline-retry'(el) {
     el.disabled = true;
     await checkAccess(true);
@@ -1065,9 +1185,9 @@ const fields = {
   points(el) { const v = el.value.replace(/\D/g, '').slice(0, 4); if (v !== el.value) el.value = v; update(ui.day, (x) => { x.points = Number(v) || 0; }); refreshDay(); },
   machines(el) { const v = el.value.replace(/\D/g, '').slice(0, 3); if (v !== el.value) el.value = v; update(ui.day, (x) => { x.machines = Number(v) || 0; }); refreshDay(); },
   note(el) { update(ui.day, (x) => { x.note = el.value; }); refreshDay(); renderTop(); },
-  header(el) { S.settings.header = el.value; save(); },
-  'rate-point'(el) { const v = parseFloat(el.value.replace(',', '.')); if (Number.isFinite(v) && v >= 0) { S.rates.point = v; save(); } },
-  'rate-machine'(el) { const v = parseFloat(el.value.replace(',', '.')); if (Number.isFinite(v) && v >= 0) { S.rates.machine = v; save(); } },
+  header(el) { S.settings.header = el.value; metaChanged(); save(); },
+  'rate-point'(el) { const v = parseFloat(el.value.replace(',', '.')); if (Number.isFinite(v) && v >= 0) { S.rates.point = v; metaChanged(); save(); } },
+  'rate-machine'(el) { const v = parseFloat(el.value.replace(',', '.')); if (Number.isFinite(v) && v >= 0) { S.rates.machine = v; metaChanged(); save(); } },
 };
 
 document.addEventListener('click', (ev) => {
@@ -1120,7 +1240,9 @@ function onTime(el) {
 /* ===================== Запуск ===================== */
 darkMq.addEventListener('change', () => { if (S.settings.theme === 'system') applyTheme(); });
 document.addEventListener('visibilitychange', () => {
-  if (document.visibilityState === 'visible') { renderTop(); checkAccess(); if (offlineLocked()) renderSheet(); }
+  if (document.visibilityState === 'visible') { renderTop(); checkAccess(); if (offlineLocked()) renderSheet(); syncNow(); }
+  // Уходим из приложения — сразу отправляем неотправленное (только владелец)
+  if (document.visibilityState === 'hidden' && (Object.keys(S.sync.dirty).length || S.sync.metaDirty)) syncNow();
 });
 setInterval(renderTop, 60000);
 
