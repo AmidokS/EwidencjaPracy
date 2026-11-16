@@ -2,7 +2,7 @@
 /* Учёт работы — PWA. Создатель: Artur Alimhulov.
    Все данные хранятся только на телефоне (localStorage). */
 
-const VERSION = '2.0';
+const VERSION = '2.1';
 const STORE_KEY = 'uchet-raboty-v1';
 
 /* ===================== Дни ===================== */
@@ -573,6 +573,7 @@ function renderDay() {
     ${navHead(weekdayName(d), `${dayMonth(d)} · ${rel}`, true)}
     ${d !== td ? `<button class="chip-btn" data-act="today">${ic('back', 16)} ${t('Вернуться к сегодня', 'Wróć do dziś')}</button>` : ''}
 
+    <div class="col">
     ${card('chat', 'WhatsApp', '',
       `${d === td ? `<div class="btn-row wa-row">
          <button class="btn tonal" data-act="wa-start">${ic('play', 18)} ${esc(waStatus('Start'))}</button>
@@ -595,12 +596,15 @@ function renderDay() {
        <div class="right" id="clear-time" ${x.start == null && x.end == null ? 'hidden' : ''}>
          <button class="link" data-act="clear-time">${t('Сбросить время', 'Wyczyść godziny')}</button>
        </div>`)}
+    </div>
 
+    <div class="col">
     ${card('note', t('Заметка', 'Notatka'), '',
       `<textarea class="field" data-field="note" rows="2" placeholder="${t('Например: не хватило пачки — написать мейл', 'Np. zabrakło paczki — wysłać maila')}">${esc(x.note)}</textarea>
        <div id="note-hint">${noteHint(d, x)}</div>`)}
 
-    <div id="earn">${earnHtml(d)}</div>`;
+    <div id="earn" class="first-desk">${earnHtml(d)}</div>
+    </div>`;
 }
 
 const hoursPill = (x) => (worked(x) > 0 ? `<span class="pill">${hours(worked(x))}</span>` : '');
@@ -672,13 +676,15 @@ function renderCalendar() {
 
   return `
     ${navHead(monthTitle(mi), t('Нажми на день, чтобы изменить', 'Dotknij dnia, aby edytować'))}
+    <div class="col wide">
     <div class="cal-wrap"><div class="cal-head">${heads}</div><div class="cal">${cells}</div></div>
     <div class="legend">
       <span><i style="background:var(--primary)"></i>${t('точки', 'punkty')}</span>
       <span><i style="background:var(--tertiary)"></i>${t('Жабка', 'Żabka')}</span>
       <span><i style="background:var(--error)"></i>${t('заметка', 'notatka')}</span>
     </div>
-    ${halfCards}`;
+    </div>
+    <div class="col">${halfCards}</div>`;
 }
 
 /* ===================== Экран «Отчёт» ===================== */
@@ -743,6 +749,7 @@ function renderReport() {
 
   return `
     ${navHead(periodTitle(p), `${t('Период выплаты', 'Okres rozliczeniowy')} · ${ymd(p.end).y}`)}
+    <div class="col">
     ${progress}
     <div class="tiles">
       ${tile(t('Точек', 'Punktów'), s.points)}
@@ -752,7 +759,8 @@ function renderReport() {
     </div>
     ${card('money', t('К оплате', 'Do wypłaty'), '', payBody)}
     ${card('doc', t('Отчёт', 'Raport'), '', repBody)}
-    ${card('list', t('По дням', 'Dzień po dniu'), '', daysBody)}`;
+    </div>
+    <div class="col">${card('list', t('По дням', 'Dzień po dniu'), '', daysBody)}</div>`;
 }
 
 /* ===================== Экран «Итоги» ===================== */
@@ -782,6 +790,7 @@ function renderStats() {
 
   return `
     ${navHead(monthTitle(mi), t('Итоги месяца', 'Podsumowanie miesiąca'))}
+    <div class="col">
     <div class="hero">
       <div class="lbl2">${t('Доход за месяц', 'Dochód za miesiąc')}</div>
       <div class="big">${money(m)}</div>
@@ -795,10 +804,13 @@ function renderStats() {
       ${tile(t('Часов', 'Godzin'), hours(s.minutes), avgMin ? `≈ ${hours(avgMin)} ${t('в день', 'dziennie')}` : '')}
       ${tile(t('В час', 'Na godzinę'), s.minutes ? money(m / (s.minutes / 60)) : '—')}
     </div>
+    </div>
+    <div class="col">
     ${card('chart', t('Точки по дням', 'Punkty dziennie'), '',
       bars(pts, 'var(--primary)', 130) +
       (bestV > 0 ? `<p class="muted">${t('Лучший день', 'Najlepszy dzień')}: ${shortD(days[bestI])} — ${bestV}</p>` : ''))}
-    ${card('store', t('Жабка по дням', 'Żabka dziennie'), '', bars(mach, 'var(--tertiary)', 90))}`;
+    ${card('store', t('Жабка по дням', 'Żabka dziennie'), '', bars(mach, 'var(--tertiary)', 90))}
+    </div>`;
 }
 
 /* ===================== Экран «Настройки» ===================== */
@@ -810,6 +822,7 @@ function renderSettings() {
 
   return `
     <h1 class="page-title">${t('Настройки', 'Ustawienia')}</h1>
+    <div class="col">
     ${installCard()}
     ${card('globe', t('Язык приложения', 'Język aplikacji'), '',
       `<div class="seg">${seg('lang', 'ru', 'Русский', st.lang === 'ru')}${seg('lang', 'pl', 'Polski', st.lang === 'pl')}</div>`)}
@@ -818,6 +831,8 @@ function renderSettings() {
        <div class="swatches">${swatches}</div>
        <p class="muted">${t('Тема', 'Motyw')}</p>
        <div class="seg">${seg('theme', 'system', t('Как в системе', 'Systemowy'), st.theme === 'system')}${seg('theme', 'light', t('Светлая', 'Jasny'), st.theme === 'light')}${seg('theme', 'dark', t('Тёмная', 'Ciemny'), st.theme === 'dark')}</div>`)}
+    </div>
+    <div class="col">
     ${card('doc', t('Шапка отчёта', 'Nagłówek raportu'), '',
       `<textarea class="field" data-field="header" rows="3" placeholder="${t('Имя Фамилия&#10;Код&#10;Номер', 'Imię Nazwisko&#10;Kod&#10;Numer')}">${esc(st.header)}</textarea>
        <p class="muted small">${t('Эти строки стоят в начале каждого отчёта и в минирапорте. Вторая строка — код для «Start» / «Koniec» в WhatsApp.',
@@ -838,6 +853,7 @@ function renderSettings() {
         'Jesteś właścicielem: wpisy, stawki i nagłówek są takie same na wszystkich Twoich urządzeniach. Język i motyw — osobno na każdym.')}</p>
        <p class="muted small">${t('Последняя синхронизация', 'Ostatnia synchronizacja')}: ${S.sync.at ? fullDate(S.sync.at) : '—'}${Object.keys(S.sync.dirty).length || S.sync.metaDirty ? ` · ${t('есть неотправленное', 'są niewysłane zmiany')}` : ''}</p>
        <button class="btn tonal" data-act="sync-now">${ic('sync', 18)} ${t('Синхронизировать сейчас', 'Synchronizuj teraz')}</button>`) : ''}
+    </div>
     <div class="footer">
       <div class="c1">${t('Создатель', 'Twórca')}</div>
       <div class="c2">Artur Alimhulov</div>
@@ -967,8 +983,10 @@ const TABS = [
 ];
 
 function renderTabs() {
-  $tabs.innerHTML = TABS.map((tb, i) =>
-    `<button class="tab ${i === ui.tab ? 'on' : ''}" data-act="tab" data-v="${i}"><span class="ib">${ic(tb.icon, 22)}</span><span>${t(tb.ru, tb.pl)}</span></button>`).join('');
+  // На компьютере меню слева, сверху — название приложения (на телефоне скрыто)
+  $tabs.innerHTML = `<div class="brand"><img src="icons/icon-192.png" alt=""><div><b>Ewidencja Pracy</b>${S.auth.name ? `<span>${esc(S.auth.name)}</span>` : ''}</div></div>` +
+    TABS.map((tb, i) =>
+      `<button class="tab ${i === ui.tab ? 'on' : ''}" data-act="tab" data-v="${i}"><span class="ib">${ic(tb.icon, 22)}</span><span>${t(tb.ru, tb.pl)}</span></button>`).join('');
 }
 
 function render(resetScroll) {
@@ -976,7 +994,7 @@ function render(resetScroll) {
   renderTabs();
   renderTop();
   const scroll = $screen.scrollTop;
-  $screen.innerHTML = `<div class="page">${TABS[ui.tab].render()}</div>`;
+  $screen.innerHTML = `<div class="page t${ui.tab}">${TABS[ui.tab].render()}</div>`;
   $screen.scrollTop = resetScroll ? 0 : scroll;
   renderSheet();
 }
@@ -1199,6 +1217,13 @@ document.addEventListener('click', (ev) => {
 
 document.addEventListener('keydown', (ev) => {
   if (ev.key === 'Enter' && ev.target.id === 'lock-code') { ev.preventDefault(); actions.activate(); }
+  // На компьютере: стрелки ← → листают день / месяц / период (если не печатаешь и нет окна)
+  const tag = (ev.target.tagName || '').toUpperCase();
+  if ((ev.key === 'ArrowLeft' || ev.key === 'ArrowRight') && !['INPUT', 'TEXTAREA', 'SELECT'].includes(tag)
+      && !ev.altKey && !ev.ctrlKey && !ev.metaKey && !$sheet.innerHTML.trim() && ui.tab <= 3) {
+    ev.preventDefault();
+    navigate(ev.key === 'ArrowLeft' ? -1 : 1);
+  }
 });
 
 document.addEventListener('input', (ev) => {

@@ -286,3 +286,74 @@ button:disabled { opacity: .45; cursor: default; }
 .footer .c1 { font-size: 12px; color: var(--text2); font-weight: 600; }
 .footer .c2 { font-size: 17px; font-weight: 700; color: var(--primary); }
 .footer .c3 { font-size: 12px; color: var(--outline); margin-top: 4px; }
+
+/* ---------- Колонки: на телефоне их «нет» (всё одним столбцом), на компьютере — две ---------- */
+.col { display: contents; }
+.brand { display: none; }
+
+/* ---------- Компьютер и планшет в альбомной ориентации ---------- */
+@media (min-width: 900px) {
+  #app { display: grid; grid-template-columns: 248px minmax(0, 1fr); grid-template-rows: auto minmax(0, 1fr); }
+
+  /* Меню слева вместо нижней панели */
+  #tabs {
+    grid-column: 1; grid-row: 1 / span 2;
+    flex-direction: column; gap: 4px;
+    border-top: 0; border-right: 1px solid var(--outline-v);
+    padding: calc(20px + env(safe-area-inset-top)) 14px 20px;
+  }
+  .brand { display: flex; align-items: center; gap: 12px; padding: 4px 10px 22px; }
+  .brand img { width: 40px; height: 40px; border-radius: 11px; flex: none; }
+  .brand div { display: flex; flex-direction: column; min-width: 0; }
+  .brand b { font-size: 16px; font-weight: 700; }
+  .brand span { font-size: 12px; color: var(--text2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .tab {
+    flex: none; flex-direction: row; justify-content: flex-start; gap: 12px;
+    padding: 8px 12px; border-radius: 14px; font-size: 15px; text-align: left;
+  }
+  .tab .ib { width: 32px; height: 32px; border-radius: 10px; }
+  .tab.on { background: var(--sc); color: var(--on-sc); }
+  .tab.on .ib { background: none; color: inherit; }
+
+  #topbar { grid-column: 2; grid-row: 1; padding: env(safe-area-inset-top) 32px 0; }
+  #topbar .banner { max-width: 1100px; margin-left: auto; margin-right: auto; }
+  #screen { grid-column: 2; grid-row: 2; }
+
+  /* Содержимое: две колонки */
+  .page {
+    max-width: 1100px; padding: 20px 32px 40px;
+    display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 16px; align-items: start;
+  }
+  .page > :not(.col) { grid-column: 1 / -1; }
+  .col { display: flex; flex-direction: column; gap: 16px; min-width: 0; }
+  .page .first-desk { order: -1; }
+  .navhead { width: 100%; max-width: 560px; justify-self: center; }
+  .page > .chip-btn { justify-self: center; }
+  .page-title { margin-top: 4px; }
+
+  /* Календарь крупнее, итоги половин месяца — справа */
+  .page.t1 { grid-template-columns: minmax(0, 2fr) minmax(0, 1fr); }
+  .page.t1 .cell { height: 84px; }
+  .page.t1 .cell b { font-size: 17px; }
+  .page.t1 .cp { font-size: 13px; }
+  .page.t1 .cm { font-size: 12px; }
+
+  /* «По дням» в отчёте — справа, рядом с итогами */
+  .page.t2 .col:last-child .card { position: sticky; top: 0; }
+
+  #toast { bottom: 32px; left: calc(50% + 124px); }
+  .sheet-bg { align-items: center; }
+  .sheet { border-radius: 28px; max-width: 520px; }
+}
+
+@media (min-width: 1400px) {
+  .page { max-width: 1200px; }
+  #topbar .banner { max-width: 1200px; }
+}
+
+/* Мышь: подсветка при наведении */
+@media (hover: hover) and (pointer: fine) {
+  .tab:not(.on):hover, .cell:hover, .trow:not(.head):hover { background: var(--card-hi); }
+  .btn:hover, .round:hover, .step:hover, .chip:hover, .chip-btn:hover, .swatch:hover { filter: brightness(1.07); }
+  .tab, .cell, .trow, .btn, .round, .step { transition: background .15s, filter .15s; }
+}
