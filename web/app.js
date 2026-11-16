@@ -2,7 +2,7 @@
 /* Учёт работы — PWA. Создатель: Artur Alimhulov.
    Все данные хранятся только на телефоне (localStorage). */
 
-const VERSION = '1.6';
+const VERSION = '1.7.1';
 const STORE_KEY = 'uchet-raboty-v1';
 
 /* ===================== Дни ===================== */
@@ -47,7 +47,9 @@ const DEFAULTS = {
   settings: { lang: 'ru', palette: 0, theme: 'system', header: '', reminders: true, reminderMinute: 480, onboarded: false },
   dismissed: {},
   installHidden: false,
-  auth: { code: '', device: '', ok: false, name: '', reason: '', checkedAt: 0 },
+  auth: { code: '', device: '', ok: false, name: '', reason: '', checkedAt: 0, lastOk: 0, expires: null, cfg: null },
+  cloud: { on: false, at: 0, dirty: false },
+  msgHidden: 0,
 };
 
 let S = load();
@@ -63,8 +65,12 @@ function load() {
     Object.assign(s.settings, raw.settings || {});
     Object.assign(s.dismissed, raw.dismissed || {});
     Object.assign(s.auth, raw.auth || {});
+    Object.assign(s.cloud, raw.cloud || {});
     s.installHidden = !!raw.installHidden;
+    s.msgHidden = raw.msgHidden || 0;
   }
+  // Обновление со старой версии: считаем последнюю проверку успешной, чтобы не закрыть приложение сразу
+  if (s.auth.ok && !s.auth.lastOk) s.auth.lastOk = s.auth.checkedAt || Date.now();
   return s;
 }
 
@@ -89,6 +95,7 @@ function update(e, fn) {
   if (x.note !== before.note) delete S.dismissed[k];
   if (isEmptyEntry(x)) delete S.entries[k]; else S.entries[k] = x;
   save();
+  touched();
 }
 
 function summarize(p) {
@@ -233,6 +240,8 @@ function deviceId() {
   return S.auth.device;
 }
 
+const platform = () => (isIOS() ? 'ios' : /Android/i.test(navigator.userAgent) ? 'web-android' : 'web');
+
 async function api(path, data) {
   const ctrl = new AbortController();
   const timer = setTimeout(() => ctrl.abort(), 12000);
@@ -240,7 +249,7 @@ async function api(path, data) {
     const res = await fetch(AUTH_API + path, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(data),
+      body: JSON.stringify({ platform: platform(), version: VERSION, ...data }),
       signal: ctrl.signal,
       cache: 'no-store',
     });
@@ -257,6 +266,7 @@ function authMessage(reason) {
     case 'other_device': return t('Этот код уже используется на другом телефоне.', 'Ten kod jest już używany na innym telefonie.');
     case 'unbound': return t('Код отвязан от этого телефона. Введи код ещё раз.', 'Kod został odłączony od tego telefonu. Wpisz kod ponownie.');
     case 'revoked': return t('Твой код больше не действует. Введи новый код.', 'Twój kod już nie działa. Wpisz nowy kod.');
+    case 'expired': return t('Срок действия кода закончился.', 'Kod stracił ważność.');
     case 'too_many': return t('Слишком много неверных попыток. Попробуй через час.', 'Zbyt wiele błędnych prób. Spróbuj za godzinę.');
     case 'network': return t('Нет связи с сервером. Проверь интернет и попробуй ещё раз.', 'Brak połączenia z serwerem. Sprawdź internet i spróbuj ponownie.');
     case 'empty': return t('Введи код доступа.', 'Wpisz kod dostępu.');
@@ -269,19 +279,104 @@ async function checkAccess(force) {
   if (!AUTH_API || !S.auth.ok || !S.auth.code) return;
   if (!force && Date.now() - (S.auth.checkedAt || 0) < CHECK_EVERY) return;
   try {
+    const wasOffline = offlineLocked();
     const r = await api('/check', { code: S.auth.code, device: deviceId() });
     S.auth.checkedAt = Date.now();
-    if (r && r.ok === false && ['invalid', 'disabled', 'other_device', 'unbound'].includes(r.reason)) {
+    if (r && r.ok === false && ['invalid', 'disabled', 'other_device', 'unbound', 'expired'].includes(r.reason)) {
       S.auth.ok = false;
       S.auth.reason = r.reason === 'invalid' ? 'revoked' : r.reason;
       save();
       render();
-    } else {
-      if (r && r.name) S.auth.name = r.name;
+    } else if (r && r.ok) {
+      acceptServer(r);
       save();
+      if (wasOffline) $sheet.innerHTML = '';
+      render();
+      cloudSync();
     }
   } catch (e) { /* нет интернета — работаем как обычно */ }
 }
+
+/** Запомнить ответ сервера: имя, срок кода, общие настройки (объявление, лимит без интернета). */
+function acceptServer(r) {
+  S.auth.lastOk = Date.now();
+  if (r.name) S.auth.name = r.name;
+  S.auth.expires = r.expires || null;
+  if (r.cfg) S.auth.cfg = r.cfg;
+}
+
+/* Без связи с сервером дольше, чем разрешил владелец, — просим подключиться к интернету */
+function offlineLocked() {
+  if (!AUTH_API || !S.auth.ok) return false;
+  const days = S.auth.cfg && S.auth.cfg.offlineDays;
+  return !!days && !!S.auth.lastOk && Date.now() - S.auth.lastOk > days * DAY_MS;
+}
+
+/* ===================== Копия на сервере ===================== */
+/* Включает сам пользователь в Настройках. Копия нужна, чтобы не потерять записи при смене телефона. */
+function backupData() {
+  const entries = Object.keys(S.entries).sort().map((date) => {
+    const x = S.entries[date];
+    const o = { date, points: x.points || 0, machines: x.machines || 0 };
+    if (x.start != null) o.start = x.start;
+    if (x.end != null) o.end = x.end;
+    if ((x.note || '').trim()) o.note = x.note;
+    return o;
+  });
+  return JSON.stringify({ v: 1, app: 'ewidencja', at: Date.now(), entries, rates: S.rates, header: S.settings.header || '' });
+}
+
+function restoreData(text) {
+  const d = JSON.parse(text);
+  if (!d || !Array.isArray(d.entries)) throw new Error('bad');
+  for (const o of d.entries) {
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(o.date)) continue;
+    const x = { ...blank(), points: o.points || 0, machines: o.machines || 0, start: o.start ?? null, end: o.end ?? null, note: o.note || '' };
+    if (isEmptyEntry(x)) delete S.entries[o.date]; else S.entries[o.date] = x;
+  }
+  if (d.rates && Number.isFinite(d.rates.point) && Number.isFinite(d.rates.machine)) S.rates = { point: d.rates.point, machine: d.rates.machine };
+  if (d.header && !S.settings.header) S.settings.header = d.header;
+  return d.entries.length;
+}
+
+let cloudTimer = null;
+function touched() {
+  if (!S.cloud.on) return;
+  S.cloud.dirty = true;
+  save();
+  clearTimeout(cloudTimer);
+  cloudTimer = setTimeout(() => cloudSync(), 60000);
+}
+
+async function cloudSync(force) {
+  if (!AUTH_API || !S.auth.ok || !S.cloud.on || (!S.cloud.dirty && !force)) return false;
+  if (cloudSync.busy) return false;
+  cloudSync.busy = true;
+  try {
+    const r = await api('/backup/put', { code: S.auth.code, device: deviceId(), data: backupData() });
+    if (r && r.ok && !r.skipped) { S.cloud.at = r.at; S.cloud.dirty = false; save(); if (ui.tab === 4) render(); return true; }
+    if (r && r.skipped) { clearTimeout(cloudTimer); cloudTimer = setTimeout(() => cloudSync(), 70000); }
+  } catch (e) { /* нет интернета — отправим позже */ } finally { cloudSync.busy = false; }
+  return false;
+}
+
+async function cloudRestore(ask) {
+  try {
+    const r = await api('/backup/get', { code: S.auth.code, device: deviceId() });
+    if (!r || !r.ok) { toast(t('На сервере нет копии', 'Brak kopii na serwerze')); return; }
+    if (ask && !confirm(t(`Восстановить записи из копии от ${fullDate(r.at)}? Совпадающие дни будут заменены.`,
+      `Przywrócić wpisy z kopii z ${fullDate(r.at)}? Pasujące dni zostaną zastąpione.`))) return;
+    const n = restoreData(r.data);
+    S.cloud = { on: true, at: r.at || Date.now(), dirty: false };
+    save();
+    render();
+    toast(t(`Восстановлено дней: ${n}`, `Przywrócono dni: ${n}`));
+  } catch (e) {
+    toast(t('Нет связи с сервером', 'Brak połączenia z serwerem'));
+  }
+}
+
+const fullDate = (ms) => { if (!ms) return '—'; const d = new Date(ms); return `${pad(d.getDate())}.${pad(d.getMonth() + 1)}.${d.getFullYear()} ${pad(d.getHours())}:${pad(d.getMinutes())}`; };
 
 /* ===================== Тема ===================== */
 const PALETTES = [
@@ -662,11 +757,21 @@ function renderSettings() {
          <label class="btn tonal" style="cursor:pointer">${ic('upload', 18)} ${t('Загрузить', 'Wczytaj')}<input type="file" data-import accept=".json,.csv,application/json,text/csv,text/plain" hidden></label>
        </div>
        <button class="btn tonal" data-act="export-csv">${ic('table', 18)} ${t('Экспорт в Excel (CSV)', 'Eksport do Excela (CSV)')}</button>`)}
+    ${AUTH_API && S.auth.ok ? card('upload', t('Копия на сервере', 'Kopia na serwerze'),
+      `<label class="switch"><input type="checkbox" data-check="cloud" ${S.cloud.on ? 'checked' : ''} aria-label="${t('Копия на сервере', 'Kopia na serwerze')}"><span></span></label>`,
+      `<p class="muted">${t('Записи автоматически копируются на сервер. Если сменишь телефон или удалишь приложение — введи свой код, и записи вернутся. Копия хранится на сервере владельца приложения; выключишь — она удалится.',
+        'Wpisy są automatycznie kopiowane na serwer. Jeśli zmienisz telefon lub usuniesz aplikację — wpisz swój kod, a wpisy wrócą. Kopia jest przechowywana na serwerze właściciela aplikacji; po wyłączeniu zostanie usunięta.')}</p>
+       ${S.cloud.on ? `<p class="muted small">${t('Последняя копия', 'Ostatnia kopia')}: ${S.cloud.at ? fullDate(S.cloud.at) : '—'}${S.cloud.dirty ? ` · ${t('ждёт отправки', 'czeka na wysłanie')}` : ''}</p>
+       <div class="btn-row">
+         <button class="btn tonal" data-act="cloud-now">${ic('upload', 18)} ${t('Сохранить сейчас', 'Zapisz teraz')}</button>
+         <button class="btn tonal" data-act="cloud-restore">${ic('download', 18)} ${t('Восстановить', 'Przywróć')}</button>
+       </div>` : `<button class="btn tonal" data-act="cloud-restore">${ic('download', 18)} ${t('Восстановить с сервера', 'Przywróć z serwera')}</button>`}`) : ''}
     <div class="footer">
       <div class="c1">${t('Создатель', 'Twórca')}</div>
       <div class="c2">Artur Alimhulov</div>
       <div class="c3">${t('Версия', 'Wersja')} ${VERSION}</div>
       ${AUTH_API && S.auth.code ? `<div class="c3">${t('Код доступа', 'Kod dostępu')}: ${prettyCode(S.auth.code)}${S.auth.name ? ` · ${esc(S.auth.name)}` : ''}</div>` : ''}
+      ${AUTH_API && S.auth.expires ? `<div class="c3">${t('Код действует до', 'Kod ważny do')} ${fullDate(S.auth.expires).slice(0, 10)}</div>` : ''}
     </div>`;
 }
 
@@ -696,6 +801,17 @@ function renderTop() {
     html += `<div class="banner install">${ic('download', 20)}<div class="bt"><b>${t('Установи приложение', 'Zainstaluj aplikację')}</b><p>${installText()}</p></div>
       ${installEvent ? `<button data-act="install">${t('Установить', 'Zainstaluj')}</button>` : ''}
       <button class="x" data-act="hide-install" aria-label="${t('Закрыть', 'Zamknij')}">${ic('x', 18)}</button></div>`;
+  }
+  const msg = AUTH_API && S.auth.ok && S.auth.cfg && S.auth.cfg.msg;
+  if (msg && msg.text && msg.id !== S.msgHidden) {
+    html += `<div class="banner">${ic('bell', 20)}<div class="bt"><b>${t('Объявление', 'Ogłoszenie')}</b><p>${esc(msg.text)}</p></div>
+      <button class="x" data-act="hide-msg" data-id="${msg.id}" aria-label="${t('Закрыть', 'Zamknij')}">${ic('x', 18)}</button></div>`;
+  }
+  if (AUTH_API && S.auth.ok && S.auth.expires) {
+    const left = Math.ceil((S.auth.expires - Date.now()) / DAY_MS);
+    if (left >= 0 && left <= 3) {
+      html += `<div class="banner">${ic('bell', 20)}<div class="bt"><b>${t('Код скоро закончится', 'Kod wkrótce wygaśnie')}</b><p>${t('Действует до', 'Ważny do')} ${fullDate(S.auth.expires).slice(0, 10)}</p></div></div>`;
+    }
   }
   for (const d of dueReminders()) {
     const x = entry(d);
@@ -733,6 +849,18 @@ function renderSheet() {
   if (locked()) {
     // Не перерисовываем экран кода, пока человек печатает
     if (!document.getElementById('lock-code')) renderLock();
+    return;
+  }
+  if (offlineLocked()) {
+    if (document.getElementById('offline-box')) return;
+    $sheet.innerHTML = `<div class="lock"><div class="lock-box" id="offline-box">
+      <img class="logo" src="icons/icon-192.png" alt="">
+      <h2>${t('Нужен интернет', 'Potrzebny internet')}</h2>
+      <p class="muted">${t('Приложение давно не связывалось с сервером. Включи интернет и нажми «Проверить» — все записи на месте.',
+        'Aplikacja dawno nie łączyła się z serwerem. Włącz internet i naciśnij „Sprawdź” — wszystkie wpisy są na miejscu.')}</p>
+      <button class="btn primary" data-act="offline-retry">${t('Проверить', 'Sprawdź')}</button>
+      <button class="link" data-act="backup">${ic('download', 16)} ${t('Сохранить мои записи', 'Zapisz moje wpisy')}</button>
+    </div></div>`;
     return;
   }
   if (S.settings.onboarded) { $sheet.innerHTML = ''; return; }
@@ -925,10 +1053,13 @@ const actions = {
       const r = await api('/activate', { code, device: deviceId() });
       if (r && r.ok) {
         S.auth = { ...S.auth, code, ok: true, name: r.name || '', reason: '', checkedAt: Date.now() };
+        acceptServer(r);
         save();
         $sheet.innerHTML = '';
         render();
         toast(`${t('Добро пожаловать', 'Witaj')}${r.name ? `, ${r.name}` : ''}!`);
+        // Новый телефон, а на сервере есть копия записей — предлагаем вернуть
+        if (r.backupAt && !Object.keys(S.entries).length) setTimeout(() => cloudRestore(true), 400);
         return;
       }
       err.textContent = authMessage((r && r.reason) || 'invalid');
@@ -943,6 +1074,14 @@ const actions = {
   dismiss(el) { S.dismissed[iso(Number(el.dataset.day))] = true; save(); renderTop(); },
   'hide-install'() { S.installHidden = true; save(); renderTop(); },
   async install() { if (!installEvent) return; installEvent.prompt(); try { await installEvent.userChoice; } catch (e) { /* ignore */ } installEvent = null; render(); },
+  'hide-msg'(el) { S.msgHidden = Number(el.dataset.id); save(); renderTop(); },
+  async 'offline-retry'(el) {
+    el.disabled = true;
+    await checkAccess(true);
+    if (offlineLocked()) { el.disabled = false; toast(t('Нет связи с сервером', 'Brak połączenia z serwerem')); }
+  },
+  async 'cloud-now'() { if (await cloudSync(true)) toast(t('Копия сохранена', 'Kopia zapisana')); else toast(t('Не получилось. Проверь интернет или попробуй через минуту.', 'Nie udało się. Sprawdź internet lub spróbuj za minutę.')); },
+  'cloud-restore'() { cloudRestore(true); },
   backup() { shareFile(`uchet-raboty-${stamp()}.json`, JSON.stringify({ app: 'uchet-raboty', version: VERSION, ...S }, null, 1), 'application/json'); },
   'export-csv'() { shareFile(`uchet-raboty-${stamp()}.csv`, '﻿' + buildCsv(), 'text/csv'); },
 };
@@ -956,9 +1095,9 @@ const fields = {
   points(el) { const v = el.value.replace(/\D/g, '').slice(0, 4); if (v !== el.value) el.value = v; update(ui.day, (x) => { x.points = Number(v) || 0; }); refreshDay(); },
   machines(el) { const v = el.value.replace(/\D/g, '').slice(0, 3); if (v !== el.value) el.value = v; update(ui.day, (x) => { x.machines = Number(v) || 0; }); refreshDay(); },
   note(el) { update(ui.day, (x) => { x.note = el.value; }); refreshDay(); renderTop(); },
-  header(el) { S.settings.header = el.value; save(); },
-  'rate-point'(el) { const v = parseFloat(el.value.replace(',', '.')); if (Number.isFinite(v) && v >= 0) { S.rates.point = v; save(); } },
-  'rate-machine'(el) { const v = parseFloat(el.value.replace(',', '.')); if (Number.isFinite(v) && v >= 0) { S.rates.machine = v; save(); } },
+  header(el) { S.settings.header = el.value; save(); touched(); },
+  'rate-point'(el) { const v = parseFloat(el.value.replace(',', '.')); if (Number.isFinite(v) && v >= 0) { S.rates.point = v; save(); touched(); } },
+  'rate-machine'(el) { const v = parseFloat(el.value.replace(',', '.')); if (Number.isFinite(v) && v >= 0) { S.rates.machine = v; save(); touched(); } },
 };
 
 document.addEventListener('click', (ev) => {
@@ -994,6 +1133,16 @@ document.addEventListener('change', (ev) => {
   if (el.dataset.time !== undefined) onTime(el);
   if (el.dataset.date !== undefined && el.value) { ui.day = fromIso(el.value); render(true); }
   if (el.dataset.check === 'reminders') { S.settings.reminders = el.checked; save(); render(); }
+  if (el.dataset.check === 'cloud') {
+    if (el.checked) {
+      S.cloud.on = true; S.cloud.dirty = true; save(); render();
+      cloudSync(true).then((ok) => { if (ok) toast(t('Копия сохранена', 'Kopia zapisana')); });
+    } else {
+      if (!confirm(t('Выключить копию на сервере? Копия с сервера будет удалена.', 'Wyłączyć kopię na serwerze? Kopia zostanie usunięta z serwera.'))) { el.checked = true; return; }
+      S.cloud = { on: false, at: 0, dirty: false }; save(); render();
+      api('/backup/delete', { code: S.auth.code, device: deviceId() }).catch(() => {});
+    }
+  }
   if (el.dataset.reminderTime !== undefined) {
     const m = parseClock(el.value);
     if (m != null) { S.settings.reminderMinute = m; save(); render(); }
@@ -1053,6 +1202,7 @@ async function importFile(file) {
     if (full.settings && full.settings.header && !S.settings.header) S.settings.header = full.settings.header;
   }
   save();
+  touched();
   render();
   toast(t('Записи загружены', 'Wpisy wczytane'));
 }
@@ -1060,12 +1210,32 @@ async function importFile(file) {
 /* ===================== Запуск ===================== */
 darkMq.addEventListener('change', () => { if (S.settings.theme === 'system') applyTheme(); });
 document.addEventListener('visibilitychange', () => {
-  if (document.visibilityState === 'visible') { renderTop(); checkAccess(); }
+  if (document.visibilityState === 'visible') { renderTop(); checkAccess(); if (offlineLocked()) renderSheet(); }
+  // Уходим из приложения — сразу отправляем несохранённую копию
+  if (document.visibilityState === 'hidden' && S.cloud.dirty) cloudSync();
 });
 setInterval(renderTop, 60000);
 
+// Обновление. iPhone часто не перезапускает ярлык, а просто «будит» его из фона,
+// поэтому при каждом возврате в приложение сами проверяем, нет ли новой версии,
+// и как только она скачалась — перезагружаемся (если человек ничего не печатает).
 if ('serviceWorker' in navigator && location.protocol !== 'file:') {
-  window.addEventListener('load', () => { navigator.serviceWorker.register('sw.js').catch(() => {}); });
+  const hadController = !!navigator.serviceWorker.controller;
+  let swReg = null, reloadPending = false;
+  const reloadNow = () => {
+    const a = document.activeElement;
+    if (a && (a.tagName === 'INPUT' || a.tagName === 'TEXTAREA')) { reloadPending = true; return; }
+    location.reload();
+  };
+  navigator.serviceWorker.addEventListener('controllerchange', () => { if (hadController) reloadNow(); });
+  window.addEventListener('load', () => {
+    navigator.serviceWorker.register('sw.js').then((r) => { swReg = r; }).catch(() => {});
+  });
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState !== 'visible') return;
+    if (reloadPending) { location.reload(); return; }
+    if (swReg) swReg.update().catch(() => {});
+  });
 }
 if (navigator.storage && navigator.storage.persist) { navigator.storage.persist().catch(() => {}); }
 

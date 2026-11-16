@@ -1,6 +1,6 @@
 // Офлайн-работа: все файлы приложения хранятся в кеше телефона.
 // При каждом запуске кеш тихо обновляется из сети, если она есть.
-const CACHE = 'uchet-1.6.1';
+const CACHE = 'uchet-1.7.1';
 const FILES = [
   './',
   './index.html',
@@ -14,7 +14,9 @@ const FILES = [
 ];
 
 self.addEventListener('install', (e) => {
-  e.waitUntil(caches.open(CACHE).then((c) => c.addAll(FILES)));
+  // cache: 'reload' — берём файлы прямо с сервера, а не из кеша браузера,
+  // иначе новая версия могла бы сохранить старые файлы
+  e.waitUntil(caches.open(CACHE).then((c) => c.addAll(FILES.map((f) => new Request(f, { cache: 'reload' })))));
   self.skipWaiting();
 });
 
