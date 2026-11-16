@@ -84,6 +84,16 @@
     .bigcode { font: 750 44px var(--rounded); letter-spacing: .14em; text-align: center; background: var(--pc); color: var(--on-pc); border-radius: 20px; padding: 18px 8px; }
     @media (min-width: 700px) { .sheet-bg { align-items: center; } .sheet { border-radius: 28px; } }
 
+    /* Окно-вопрос (вместо системных окон браузера) */
+    #dlg .sheet-bg { z-index: 80; }
+    #dlg .sheet { max-width: 460px; gap: 12px; }
+    #dlg h2 { font-size: 22px; padding-right: 40px; }
+    #dlg .q { margin: 0; color: var(--text2); font-size: 15px; line-height: 1.45; white-space: pre-wrap; }
+    #dlg .quick { display: flex; flex-wrap: wrap; gap: 8px; }
+    #dlg .quick .chip { padding: 7px 12px; font-size: 13px; }
+    #dlg .btn.danger { background: var(--error); color: #fff; }
+    :root[data-dark="1"] #dlg .btn.danger { color: #3b0907; }
+
     /* Колонки таблицы и шапка — только на компьютере */
     .c, .thead { display: none; }
     .info { display: contents; }
@@ -138,6 +148,7 @@
 <body>
   <div class="wrap" id="root"></div>
   <div id="sheet"></div>
+  <div id="dlg"></div>
   <div id="toast" role="status"></div>
   <script src="config.js"></script>
   <script>
@@ -461,6 +472,68 @@
       <button class="btn primary" id="create">Создать код</button>
     </div></div>`;
   }
+  /**
+   * Своё окно вместо prompt/confirm/alert.
+   *   dialog({ title, text, ok, danger })                                   → true / null
+   *   dialog({ title, text, field: { kind: 'text'|'note'|'date', value } }) → строка / null
+   * Для даты есть быстрые кнопки «+7 дней», «+30 дней», «до конца месяца», «без срока».
+   */
+  function dialog(o) {
+    return new Promise((resolve) => {
+      const root = document.getElementById('dlg');
+      const f = o.field;
+      const fieldHtml = !f ? ''
+        : f.kind === 'note' ? `<textarea class="field" id="dlg-in" rows="4" maxlength="${f.max || 200}" placeholder="${esc(f.placeholder || '')}">${esc(f.value || '')}</textarea>`
+        : f.kind === 'date' ? `<input class="field" id="dlg-in" type="date" min="${isoDate(Date.now())}" value="${esc(f.value || '')}">
+            <div class="quick">
+              <button class="chip" data-q="7">+7 дней</button>
+              <button class="chip" data-q="30">+30 дней</button>
+              <button class="chip" data-q="eom">до конца месяца</button>
+              <button class="chip" data-q="none">без срока</button>
+            </div>`
+        : `<input class="field" id="dlg-in" maxlength="${f.max || 60}" placeholder="${esc(f.placeholder || '')}" value="${esc(f.value || '')}" autocomplete="off">`;
+      root.innerHTML = `<div class="sheet-bg"><div class="sheet" role="dialog" aria-modal="true" aria-label="${esc(o.title)}">
+        <button class="x" data-dlg="cancel" aria-label="Закрыть">✕</button>
+        <h2>${esc(o.title)}</h2>
+        ${o.text ? `<p class="q">${esc(o.text)}</p>` : ''}
+        ${fieldHtml}
+        <p class="err" id="dlg-err"></p>
+        <div class="btn-row">
+          <button class="btn tonal" data-dlg="cancel">Отмена</button>
+          <button class="btn ${o.danger ? 'danger' : 'primary'}" data-dlg="ok">${esc(o.ok || 'Сохранить')}</button>
+        </div>
+      </div></div>`;
+      const inp = document.getElementById('dlg-in');
+      const done = (v) => { root.innerHTML = ''; document.removeEventListener('keydown', onKey, true); resolve(v); };
+      const ok = () => {
+        if (!f) return done(true);
+        const v = inp.value;
+        if (f.required && !v.trim()) { document.getElementById('dlg-err').textContent = f.required; inp.focus(); return; }
+        done(v);
+      };
+      const onKey = (e) => {
+        if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); done(null); }
+        if (e.key === 'Enter' && (!f || f.kind !== 'note')) { e.preventDefault(); e.stopPropagation(); ok(); }
+      };
+      document.addEventListener('keydown', onKey, true);
+      root.firstElementChild.addEventListener('click', (e) => {
+        e.stopPropagation();
+        if (e.target === e.currentTarget) return done(null); // клик по затемнению
+        const b = e.target.closest('[data-dlg]');
+        if (b) return b.dataset.dlg === 'ok' ? ok() : done(null);
+        const q = e.target.closest('[data-q]');
+        if (q && inp) {
+          const d = new Date();
+          if (q.dataset.q === 'none') return done('');
+          if (q.dataset.q === 'eom') inp.value = isoDate(new Date(d.getFullYear(), d.getMonth() + 1, 0).getTime());
+          else inp.value = isoDate(d.getTime() + Number(q.dataset.q) * DAY);
+        }
+      });
+      if (inp) { inp.focus(); if (inp.select && f.kind === 'text') inp.select(); }
+      else root.querySelector('[data-dlg="ok"]').focus();
+    });
+  }
+
   function openSheet(s) {
     sheet = s;
     document.getElementById('sheet').innerHTML = sheetHtml();
@@ -570,7 +643,7 @@
     if (!it) return;
     if (action === 'invite') { copy(invite(it)); return; }
     if (action === 'regen') {
-      if (!confirm(`Выдать «${it.name}» новый код? Старый код ${it.code} сразу перестанет работать, человеку нужно будет ввести новый.`)) return;
+      if (!await dialog({ title: 'Сменить код?', text: `«${it.name}» получит новый код. Старый код ${it.code} сразу перестанет работать — человеку нужно будет ввести новый.`, ok: 'Сменить код' })) return;
       try {
         const r = await call('/admin/update', 'POST', { code, action: 'regen' });
         if (openCode === code) openCode = r.code;
@@ -580,7 +653,8 @@
       return;
     }
     if (action === 'rename') {
-      const name = (prompt('Новое имя:', it.name) || '').trim();
+      const v = await dialog({ title: 'Переименовать', field: { kind: 'text', value: it.name, max: 60, placeholder: 'Имя', required: 'Впиши имя' } });
+      const name = (v || '').trim();
       if (!name || name === it.name) return;
       try {
         await call('/admin/update', 'POST', { code, action: 'rename', name });
@@ -590,30 +664,37 @@
       return;
     }
     if (action === 'note') {
-      const note = prompt('Заметка (видишь только ты). Пусто — убрать:', it.note || '');
-      if (note === null) return;
+      const note = await dialog({
+        title: it.note ? 'Заметка' : 'Добавить заметку',
+        text: `Про «${it.name}». Видишь только ты. Оставь пустой, чтобы убрать.`,
+        field: { kind: 'note', value: it.note || '', max: 200, placeholder: 'Например: работает по выходным' },
+      });
+      if (note === null || note.trim() === (it.note || '')) return;
       try { await call('/admin/update', 'POST', { code, action: 'note', note: note.trim() }); await load(); toast('Сохранено'); }
       catch (e) { toast('Ошибка'); }
       return;
     }
     if (action === 'expires') {
-      const cur = it.expires ? dateOnly(it.expires) : '';
-      const s2 = prompt('До какого дня действует код? Формат ДД.ММ.ГГГГ, например 31.12.2026.\nПусто — без срока.', cur);
+      const s2 = await dialog({
+        title: 'Срок действия',
+        text: `До какого дня работает код «${it.name}». После этой даты приложение попросит новый код.${it.expires ? `\nСейчас: до ${dateOnly(it.expires)}.` : '\nСейчас: без срока.'}`,
+        field: { kind: 'date', value: it.expires ? isoDate(it.expires) : '' },
+      });
       if (s2 === null) return;
       const expires = s2.trim() ? parseDate(s2) : null;
-      if (s2.trim() && !expires) { alert('Не понял дату. Напиши, например, 31.12.2026'); return; }
+      if ((expires || null) === (it.expires || null)) return;
       try { await call('/admin/update', 'POST', { code, action: 'expires', expires }); await load(); toast(expires ? `Действует до ${dateOnly(expires)}` : 'Без срока'); }
       catch (e) { toast('Ошибка'); }
       return;
     }
     const ask = {
-      disable: `Отключить доступ для «${it.name}»?`,
-      delete: `Удалить код «${it.name}» навсегда? Человек потеряет доступ к приложению.`,
+      disable: { title: 'Отключить доступ?', text: `«${it.name}» не сможет пользоваться приложением. Сработает при следующем запуске с интернетом. Включить обратно можно в любой момент.`, ok: 'Отключить', danger: true },
+      delete: { title: 'Удалить код?', text: `Код «${it.name}» удалится навсегда, человек потеряет доступ к приложению. Отменить это нельзя.`, ok: 'Удалить', danger: true },
       unbind: it.owner
-        ? 'Выйти на всех твоих устройствах? Приложение на каждом из них попросит ввести код заново (записи на устройствах останутся).'
-        : `Отвязать телефон от кода «${it.name}»? Старый телефон потеряет доступ, код можно будет ввести на новом.`,
+        ? { title: 'Выйти на всех устройствах?', text: 'Приложение на каждом твоём устройстве попросит ввести код заново. Записи на устройствах останутся.', ok: 'Выйти везде' }
+        : { title: 'Отвязать телефон?', text: `Старый телефон «${it.name}» потеряет доступ, а код можно будет ввести на новом.`, ok: 'Отвязать' },
     }[action];
-    if (ask && !confirm(ask)) return;
+    if (ask && !await dialog(ask)) return;
     try {
       await call('/admin/update', 'POST', { code, action });
       if (action === 'delete' && openCode === code) openCode = null;
