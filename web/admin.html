@@ -185,10 +185,14 @@
     return d <= 0 ? ' (сегодня)' : d === 1 ? ' (вчера)' : ` (${d} дн. назад)`;
   };
   /** Коротко для строки в списке: «сегодня», «вчера», «5 дн. назад». */
+  /** Последняя активность: «только что», «сегодня 14:32», «вчера 21:10», «5 дн. назад». */
   const seen = (ms) => {
     if (!ms) return 'не заходил';
-    const d = Math.floor((Date.now() - ms) / DAY);
-    return d <= 0 ? 'сегодня' : d === 1 ? 'вчера' : `${d} дн. назад`;
+    if (Date.now() - ms < 15 * 60 * 1000) return 'только что';
+    const a = new Date(ms), b = new Date();
+    const days = Math.round((new Date(b.getFullYear(), b.getMonth(), b.getDate()) - new Date(a.getFullYear(), a.getMonth(), a.getDate())) / DAY);
+    const hm = `${p2(a.getHours())}:${p2(a.getMinutes())}`;
+    return days <= 0 ? `сегодня ${hm}` : days === 1 ? `вчера ${hm}` : `${days} дн. назад`;
   };
   const plural = (n, one, few, many) => {
     const a = n % 10, b = n % 100;
@@ -310,7 +314,7 @@
                 ? devs.map((d) => `${PLATFORM[d.platform] || esc(d.platform || '?')}${d.version ? ` ${esc(d.version)}` : ''} — ${seen(d.last)}`).join('<br>')
                 : 'нет — на всех устройствах нужно ввести код'}<br><span class="muted small">Твой код работает на любом количестве устройств. «Выйти на всех устройствах» — если потерял телефон или код мог кто-то узнать.</span></dd>`
             : `<dt>Телефон</dt><dd>${it.device ? `${where(it) || 'привязан'}${isOld(it) ? ' <span class="warn">— старая версия</span>' : ''}` : 'ещё не вводил код'}</dd>`}
-          <dt>Последний вход</dt><dd>${when(it.lastSeen)}${ago(it.lastSeen)}</dd>
+          <dt>Активность</dt><dd>${when(it.lastSeen)}${ago(it.lastSeen)}<br><span class="muted small">Обновляется, когда человек открывает приложение с интернетом (не чаще раза в 10 минут).</span></dd>
           <dt>Срок</dt><dd>${it.expires ? `до ${dateOnly(it.expires)}` : 'без срока'}</dd>
           <dt>Создан</dt><dd>${when(it.created)}</dd>
           ${it.activated ? `<dt>Активирован</dt><dd>${when(it.activated)}</dd>` : ''}
@@ -369,7 +373,7 @@
     const shown = items.filter(filterFn()).filter((it) => !q || [it.name, it.note, it.code].some((v) => String(v || '').toLowerCase().includes(q)));
     if (!shown.length) return '<div class="empty">Никого не найдено.</div>';
     // Шапка таблицы — видна только на компьютере
-    const head = '<div class="thead"><span></span><span>Имя</span><span>Код</span><span>Устройство</span><span>Был</span><span>Статус</span><span></span></div>';
+    const head = '<div class="thead"><span></span><span>Имя</span><span>Код</span><span>Устройство</span><span>Активность</span><span>Статус</span><span></span></div>';
     return head + shown.map(personHtml).join('');
   }
   function refreshPeople() {
