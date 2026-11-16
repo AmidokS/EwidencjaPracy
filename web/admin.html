@@ -142,7 +142,6 @@
   };
   const hue = (s) => { let h = 0; for (const c of String(s)) h = (h * 31 + c.charCodeAt(0)) % 360; return h; };
   const initials = (s) => String(s || '?').trim().split(/\s+/).slice(0, 2).map((w) => w[0]).join('').toUpperCase() || '?';
-  const kb = (n) => (n < 1024 ? `${n} Б` : `${Math.round(n / 1024)} КБ`);
   const PLATFORM = { android: 'Android (APK)', ios: 'iPhone', 'web-android': 'Android (браузер)', web: 'Браузер' };
 
   function toast(text) {
@@ -303,8 +302,7 @@
   }
 
   function settingsHtml() {
-    const c = cfg || { msg: null, apk: { code: 0, name: '', url: '' }, minApk: 0, offlineDays: 7, tg: { token: false, linked: false } };
-    const tg = c.tg || {};
+    const c = cfg || { msg: null, apk: { code: 0, name: '', url: '' }, minApk: 0, offlineDays: 7 };
     const forced = c.minApk && c.apk.code && c.minApk >= c.apk.code;
     return `
       <section class="card">
@@ -339,15 +337,6 @@
           <input class="field" id="offline" inputmode="numeric" value="${c.offlineDays ?? 7}" aria-label="Дней без интернета">
           <button class="btn primary" data-s="offline-save">Сохранить</button>
         </div>
-      </section>
-
-      <section class="card">
-        <h3>Уведомления в Telegram</h3>
-        ${!tg.token ? `<p class="muted small">Не настроено. Нужно создать бота в @BotFather и добавить его токен в Cloudflare как секрет <b>TG_TOKEN</b> — Claude проведёт по шагам.</p>`
-          : tg.linked ? `<span class="now">Подключено ✅</span><p class="muted small">Приходят: первый вход по коду, попытки войти с другого телефона, отключённым или просроченным кодом, перебор кодов.</p>
-              <button class="btn tonal" data-s="tg-unlink">Отключить уведомления</button>`
-          : `<p class="muted small">Открой своего бота в Telegram, нажми «Start», потом нажми кнопку ниже.</p>
-              <button class="btn primary" data-s="tg-link">Подключить Telegram</button>`}
       </section>
 
       <section class="card">
@@ -489,17 +478,6 @@
           return saveCfg({ apk: { code, name: v('apk-name'), url: v('apk-url') }, minApk: force ? code : keepMin });
         }
         case 'offline-save': return saveCfg({ offlineDays: v('offline') });
-        case 'tg-link':
-          try { await call('/admin/tg-link', 'POST', {}); await load(); toast('Telegram подключён'); }
-          catch (e) {
-            alert(e.message === 'no_messages' ? 'Бот не видит твоих сообщений. Открой бота в Telegram, нажми Start и попробуй снова.'
-              : e.message === 'bad_token' ? 'Токен бота неверный. Проверь секрет TG_TOKEN в Cloudflare.' : 'Не получилось подключить');
-          }
-          return;
-        case 'tg-unlink':
-          if (!confirm('Отключить уведомления в Telegram?')) return;
-          try { await call('/admin/tg-unlink', 'POST', {}); await load(); toast('Отключено'); } catch (e) { toast('Ошибка'); }
-          return;
       }
       return;
     }

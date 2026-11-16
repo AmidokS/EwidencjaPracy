@@ -2,7 +2,7 @@
 /* Учёт работы — PWA. Создатель: Artur Alimhulov.
    Все данные хранятся только на телефоне (localStorage). */
 
-const VERSION = '1.9';
+const VERSION = '1.9.1';
 const STORE_KEY = 'uchet-raboty-v1';
 
 /* ===================== Дни ===================== */
@@ -97,7 +97,6 @@ function update(e, fn) {
   if (x.note !== before.note) delete S.dismissed[k];
   if (isEmptyEntry(x)) delete S.entries[k]; else S.entries[k] = x;
   save();
-  touched();
 }
 
 function summarize(p) {
@@ -171,13 +170,28 @@ function openWhatsApp(text) {
   if (!w) location.href = url;
 }
 const nowMinutes = () => { const n = new Date(); return n.getHours() * 60 + n.getMinutes(); };
-/** «BEM1 Start» / «BEM1 Koniec»: ставим время начала/конца на сейчас и открываем WhatsApp. */
+/**
+ * «BEM1 Start» / «BEM1 Koniec»: ставим время начала/конца на сейчас и открываем WhatsApp.
+ * Смена через полночь: если до полудня сегодня начала нет, а вчера смена начата и не закончена — «Koniec» идёт во вчерашний день.
+ * Если время уже стоит — спрашиваем, заменить ли (чтобы случайное повторное нажатие его не испортило).
+ */
 function waStartEnd(which, word) {
   if (!teamCode()) { toast(t('Сначала заполни «Шапку отчёта» в Настройках', 'Najpierw uzupełnij «Nagłówek raportu» w Ustawieniach')); return; }
   const m = nowMinutes();
-  update(todayDay(), (x) => { x[which] = m; });
-  if (ui.day === todayDay()) refreshDay();
-  toast(`${which === 'start' ? t('Начало', 'Początek') : t('Конец', 'Koniec')}: ${clock(m)}`);
+  let day = todayDay();
+  if (which === 'end' && m < 12 * 60 && entry(day).start == null) {
+    const y = entry(day - 1);
+    if (y.start != null && y.end == null) day -= 1;
+  }
+  const cur = entry(day)[which];
+  const label = which === 'start' ? t('Начало', 'Początek') : t('Конец', 'Koniec');
+  if (cur != null && cur !== m && !confirm(t(`${label} уже стоит: ${clock(cur)}. Заменить на ${clock(m)}?`, `${label} już jest: ${clock(cur)}. Zamienić na ${clock(m)}?`))) {
+    openWhatsApp(waStatus(word));
+    return;
+  }
+  update(day, (x) => { x[which] = m; });
+  if (ui.day === day) refreshDay();
+  toast(`${label}${day !== todayDay() ? ` (${shortD(day)})` : ''}: ${clock(m)}`);
   openWhatsApp(waStatus(word));
 }
 
@@ -216,16 +230,6 @@ function buildReport(p) {
   }
   if (o.hours) lines.push(`${pl ? 'Razem godzin' : 'Итого часов'}: ${hoursShort(s.minutes)}`);
   return lines.join('\n').trim();
-}
-
-function buildCsv() {
-  const head = t('Дата;Точки;Жабка;Начало;Конец;Часы;Сумма zł;Заметка', 'Data;Punkty;Żabka;Początek;Koniec;Godziny;Kwota zł;Notatka');
-  const rows = Object.keys(S.entries).sort().map((k) => {
-    const x = S.entries[k], e = fromIso(k);
-    return [fullD(e), x.points, x.machines, x.start == null ? '' : clock(x.start), x.end == null ? '' : clock(x.end),
-      hoursShort(worked(x)), rate(dayMoney(x)), `"${(x.note || '').replace(/"/g, '""')}"`].join(';');
-  });
-  return [head, ...rows].join('\n') + '\n';
 }
 
 /* ===================== Напоминания о заметках ===================== */
@@ -318,7 +322,6 @@ async function checkAccess(force) {
       save();
       if (wasOffline) $sheet.innerHTML = '';
       render();
-      cloudSync();
     }
   } catch (e) { /* нет интернета — работаем как обычно */ }
 }
@@ -336,70 +339,6 @@ function offlineLocked() {
   if (!AUTH_API || !S.auth.ok) return false;
   const days = S.auth.cfg && S.auth.cfg.offlineDays;
   return !!days && !!S.auth.lastOk && Date.now() - S.auth.lastOk > days * DAY_MS;
-}
-
-/* ===================== Копия на сервере ===================== */
-/* Включает сам пользователь в Настройках. Копия нужна, чтобы не потерять записи при смене телефона. */
-function backupData() {
-  const entries = Object.keys(S.entries).sort().map((date) => {
-    const x = S.entries[date];
-    const o = { date, points: x.points || 0, machines: x.machines || 0 };
-    if (x.start != null) o.start = x.start;
-    if (x.end != null) o.end = x.end;
-    if ((x.note || '').trim()) o.note = x.note;
-    return o;
-  });
-  return JSON.stringify({ v: 1, app: 'ewidencja', at: Date.now(), entries, rates: S.rates, header: S.settings.header || '' });
-}
-
-function restoreData(text) {
-  const d = JSON.parse(text);
-  if (!d || !Array.isArray(d.entries)) throw new Error('bad');
-  for (const o of d.entries) {
-    if (!/^\d{4}-\d{2}-\d{2}$/.test(o.date)) continue;
-    const x = { ...blank(), points: o.points || 0, machines: o.machines || 0, start: o.start ?? null, end: o.end ?? null, note: o.note || '' };
-    if (isEmptyEntry(x)) delete S.entries[o.date]; else S.entries[o.date] = x;
-  }
-  if (d.rates && Number.isFinite(d.rates.point) && Number.isFinite(d.rates.machine)) S.rates = { point: d.rates.point, machine: d.rates.machine };
-  if (d.header && !S.settings.header) S.settings.header = d.header;
-  return d.entries.length;
-}
-
-let cloudTimer = null;
-function touched() {
-  if (!S.cloud.on) return;
-  S.cloud.dirty = true;
-  save();
-  clearTimeout(cloudTimer);
-  cloudTimer = setTimeout(() => cloudSync(), 60000);
-}
-
-async function cloudSync(force) {
-  if (!AUTH_API || !S.auth.ok || !S.cloud.on || (!S.cloud.dirty && !force)) return false;
-  if (cloudSync.busy) return false;
-  cloudSync.busy = true;
-  try {
-    const r = await api('/backup/put', { code: S.auth.code, device: deviceId(), data: backupData() });
-    if (r && r.ok && !r.skipped) { S.cloud.at = r.at; S.cloud.dirty = false; save(); if (ui.tab === 4) render(); return true; }
-    if (r && r.skipped) { clearTimeout(cloudTimer); cloudTimer = setTimeout(() => cloudSync(), 70000); }
-  } catch (e) { /* нет интернета — отправим позже */ } finally { cloudSync.busy = false; }
-  return false;
-}
-
-async function cloudRestore(ask) {
-  try {
-    const r = await api('/backup/get', { code: S.auth.code, device: deviceId() });
-    if (!r || !r.ok) { toast(t('На сервере нет копии', 'Brak kopii na serwerze')); return; }
-    if (ask && !confirm(t(`Восстановить записи из копии от ${fullDate(r.at)}? Совпадающие дни будут заменены.`,
-      `Przywrócić wpisy z kopii z ${fullDate(r.at)}? Pasujące dni zostaną zastąpione.`))) return;
-    const n = restoreData(r.data);
-    S.cloud = { on: true, at: r.at || Date.now(), dirty: false };
-    save();
-    render();
-    toast(t(`Восстановлено дней: ${n}`, `Przywrócono dni: ${n}`));
-  } catch (e) {
-    toast(t('Нет связи с сервером', 'Brak połączenia z serwerem'));
-  }
 }
 
 const fullDate = (ms) => { if (!ms) return '—'; const d = new Date(ms); return `${pad(d.getDate())}.${pad(d.getMonth() + 1)}.${d.getFullYear()} ${pad(d.getHours())}:${pad(d.getMinutes())}`; };
@@ -1032,6 +971,7 @@ async function shareText(text) {
   if (await copyText(text)) toast(t('Отчёт скопирован', 'Raport skopiowany'));
 }
 
+/** Скачать файл (или «Поделиться» на телефоне). Нужно для «Сохранить мои записи» на экране входа. */
 async function shareFile(name, content, type) {
   const file = new File([content], name, { type });
   if (navigator.canShare && navigator.canShare({ files: [file] })) {
@@ -1045,9 +985,9 @@ async function shareFile(name, content, type) {
   setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 1500);
 }
 
-const stamp = () => iso(todayDay());
-
 const actions = {
+  // Человек без доступа (код отключён / нет интернета) всё равно может забрать свои записи
+  backup() { shareFile(`uchet-raboty-${iso(todayDay())}.json`, JSON.stringify({ app: 'uchet-raboty', version: VERSION, entries: S.entries, rates: S.rates, header: S.settings.header || '' }, null, 1), 'application/json'); },
   tab(el) { const v = Number(el.dataset.v); if (v !== ui.tab) { ui.tab = v; if (v === 0) ui.day = ui.day; render(true); } else if (v === 0 && ui.day !== todayDay()) { ui.day = todayDay(); render(true); } },
   prev() { navigate(-1); },
   next() { navigate(1); },
@@ -1114,10 +1054,6 @@ const actions = {
     await checkAccess(true);
     if (offlineLocked()) { el.disabled = false; toast(t('Нет связи с сервером', 'Brak połączenia z serwerem')); }
   },
-  async 'cloud-now'() { if (await cloudSync(true)) toast(t('Копия сохранена', 'Kopia zapisana')); else toast(t('Не получилось. Проверь интернет или попробуй через минуту.', 'Nie udało się. Sprawdź internet lub spróbuj za minutę.')); },
-  'cloud-restore'() { cloudRestore(true); },
-  backup() { shareFile(`uchet-raboty-${stamp()}.json`, JSON.stringify({ app: 'uchet-raboty', version: VERSION, ...S }, null, 1), 'application/json'); },
-  'export-csv'() { shareFile(`uchet-raboty-${stamp()}.csv`, '﻿' + buildCsv(), 'text/csv'); },
 };
 
 function syncNum(field) {
@@ -1129,9 +1065,9 @@ const fields = {
   points(el) { const v = el.value.replace(/\D/g, '').slice(0, 4); if (v !== el.value) el.value = v; update(ui.day, (x) => { x.points = Number(v) || 0; }); refreshDay(); },
   machines(el) { const v = el.value.replace(/\D/g, '').slice(0, 3); if (v !== el.value) el.value = v; update(ui.day, (x) => { x.machines = Number(v) || 0; }); refreshDay(); },
   note(el) { update(ui.day, (x) => { x.note = el.value; }); refreshDay(); renderTop(); },
-  header(el) { S.settings.header = el.value; save(); touched(); },
-  'rate-point'(el) { const v = parseFloat(el.value.replace(',', '.')); if (Number.isFinite(v) && v >= 0) { S.rates.point = v; save(); touched(); } },
-  'rate-machine'(el) { const v = parseFloat(el.value.replace(',', '.')); if (Number.isFinite(v) && v >= 0) { S.rates.machine = v; save(); touched(); } },
+  header(el) { S.settings.header = el.value; save(); },
+  'rate-point'(el) { const v = parseFloat(el.value.replace(',', '.')); if (Number.isFinite(v) && v >= 0) { S.rates.point = v; save(); } },
+  'rate-machine'(el) { const v = parseFloat(el.value.replace(',', '.')); if (Number.isFinite(v) && v >= 0) { S.rates.machine = v; save(); } },
 };
 
 document.addEventListener('click', (ev) => {
@@ -1167,21 +1103,10 @@ document.addEventListener('change', (ev) => {
   if (el.dataset.time !== undefined) onTime(el);
   if (el.dataset.date !== undefined && el.value) { ui.day = fromIso(el.value); render(true); }
   if (el.dataset.check === 'reminders') { S.settings.reminders = el.checked; save(); render(); }
-  if (el.dataset.check === 'cloud') {
-    if (el.checked) {
-      S.cloud.on = true; S.cloud.dirty = true; save(); render();
-      cloudSync(true).then((ok) => { if (ok) toast(t('Копия сохранена', 'Kopia zapisana')); });
-    } else {
-      if (!confirm(t('Выключить копию на сервере? Копия с сервера будет удалена.', 'Wyłączyć kopię na serwerze? Kopia zostanie usunięta z serwera.'))) { el.checked = true; return; }
-      S.cloud = { on: false, at: 0, dirty: false }; save(); render();
-      api('/backup/delete', { code: S.auth.code, device: deviceId() }).catch(() => {});
-    }
-  }
   if (el.dataset.reminderTime !== undefined) {
     const m = parseClock(el.value);
     if (m != null) { S.settings.reminderMinute = m; save(); render(); }
   }
-  if (el.dataset.import !== undefined && el.files && el.files[0]) importFile(el.files[0]).finally(() => { el.value = ''; });
   if (el.dataset.field === 'rate-point' || el.dataset.field === 'rate-machine') render();
 });
 
@@ -1192,61 +1117,10 @@ function onTime(el) {
   refreshDay();
 }
 
-/* ===================== Импорт ===================== */
-function parseCsv(text) {
-  const out = [];
-  const lines = text.replace(/^﻿/, '').split(/\r?\n/).filter((l) => l.trim());
-  for (const line of lines.slice(1)) {
-    const cols = [];
-    let cur = '', q = false;
-    for (let i = 0; i < line.length; i++) {
-      const c = line[i];
-      if (q) {
-        if (c === '"' && line[i + 1] === '"') { cur += '"'; i++; } else if (c === '"') q = false; else cur += c;
-      } else if (c === '"') q = true;
-      else if (c === ';') { cols.push(cur); cur = ''; } else cur += c;
-    }
-    cols.push(cur);
-    const dm = /^(\d{1,2})\.(\d{1,2})\.(\d{4})$/.exec((cols[0] || '').trim());
-    if (!dm) continue;
-    out.push({
-      key: iso(dayOf(+dm[3], +dm[2], +dm[1])),
-      x: { points: parseInt(cols[1], 10) || 0, machines: parseInt(cols[2], 10) || 0, start: parseClock((cols[3] || '').trim()), end: parseClock((cols[4] || '').trim()), note: cols[7] || '' },
-    });
-  }
-  return out;
-}
-
-async function importFile(file) {
-  const text = await file.text();
-  let list = [], full = null;
-  try {
-    if (text.trim().startsWith('{')) {
-      full = JSON.parse(text);
-      list = Object.entries(full.entries || {}).map(([key, x]) => ({ key, x: { ...blank(), ...x } }));
-    } else {
-      list = parseCsv(text);
-    }
-  } catch (e) { list = []; }
-  if (!list.length) { toast(t('В файле нет записей', 'Brak wpisów w pliku')); return; }
-  if (!confirm(t(`Загрузить ${list.length} дн. из файла? Совпадающие дни будут заменены.`, `Wczytać ${list.length} dni z pliku? Pasujące dni zostaną zastąpione.`))) return;
-  for (const { key, x } of list) { if (isEmptyEntry(x)) delete S.entries[key]; else S.entries[key] = x; }
-  if (full) {
-    if (full.rates) Object.assign(S.rates, full.rates);
-    if (full.settings && full.settings.header && !S.settings.header) S.settings.header = full.settings.header;
-  }
-  save();
-  touched();
-  render();
-  toast(t('Записи загружены', 'Wpisy wczytane'));
-}
-
 /* ===================== Запуск ===================== */
 darkMq.addEventListener('change', () => { if (S.settings.theme === 'system') applyTheme(); });
 document.addEventListener('visibilitychange', () => {
   if (document.visibilityState === 'visible') { renderTop(); checkAccess(); if (offlineLocked()) renderSheet(); }
-  // Уходим из приложения — сразу отправляем несохранённую копию
-  if (document.visibilityState === 'hidden' && S.cloud.dirty) cloudSync();
 });
 setInterval(renderTop, 60000);
 
