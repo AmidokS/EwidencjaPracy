@@ -140,6 +140,10 @@
     const d = Math.floor((Date.now() - ms) / DAY);
     return d <= 0 ? 'сегодня' : d === 1 ? 'вчера' : `${d} дн. назад`;
   };
+  const plural = (n, one, few, many) => {
+    const a = n % 10, b = n % 100;
+    return a === 1 && b !== 11 ? one : a >= 2 && a <= 4 && (b < 12 || b > 14) ? few : many;
+  };
   const hue = (s) => { let h = 0; for (const c of String(s)) h = (h * 31 + c.charCodeAt(0)) % 360; return h; };
   const initials = (s) => String(s || '?').trim().split(/\s+/).slice(0, 2).map((w) => w[0]).join('').toUpperCase() || '?';
   const PLATFORM = { android: 'Android (APK)', ios: 'iPhone', 'web-android': 'Android (браузер)', web: 'Браузер' };
@@ -219,7 +223,10 @@
     const tries = it.attempts || [];
     const c = esc(it.code);
     const open = openCode === it.code;
-    const line = [`<b>${c}</b>`, whereShort(it), it.device ? seen(it.lastSeen) : ''].filter(Boolean).join(' · ');
+    const devs = it.devices || [];
+    const line = it.owner && devs.length
+      ? [`<b>${c}</b>`, `${devs.length} ${plural(devs.length, 'устройство', 'устройства', 'устройств')}`, seen(it.lastSeen)].join(' · ')
+      : [`<b>${c}</b>`, whereShort(it), it.device ? seen(it.lastSeen) : ''].filter(Boolean).join(' · ');
     const flags = [
       isOld(it) ? '<span class="tag bad">Старая версия</span>' : '',
       tries.length ? `<span class="tag bad">Чужой телефон ×${tries.length}</span>` : '',
@@ -235,7 +242,11 @@
       <div class="more">
         ${it.note ? `<div class="note">${esc(it.note)}</div>` : ''}
         <dl class="facts">
-          <dt>Телефон</dt><dd>${it.device ? `${where(it) || 'привязан'}${isOld(it) ? ' <span class="warn">— старая версия</span>' : ''}` : 'ещё не вводил код'}</dd>
+          ${it.owner
+            ? `<dt>Устройства</dt><dd>${devs.length
+                ? devs.map((d) => `${PLATFORM[d.platform] || esc(d.platform || '?')}${d.version ? ` ${esc(d.version)}` : ''} — ${seen(d.last)}`).join('<br>')
+                : 'ещё не входил'}<br><span class="muted small">Твой код работает на любом количестве устройств.</span></dd>`
+            : `<dt>Телефон</dt><dd>${it.device ? `${where(it) || 'привязан'}${isOld(it) ? ' <span class="warn">— старая версия</span>' : ''}` : 'ещё не вводил код'}</dd>`}
           <dt>Последний вход</dt><dd>${when(it.lastSeen)}${ago(it.lastSeen)}</dd>
           <dt>Срок</dt><dd>${it.expires ? `до ${dateOnly(it.expires)}` : 'без срока'}</dd>
           <dt>Создан</dt><dd>${when(it.created)}</dd>
@@ -248,7 +259,7 @@
           <button data-a="note" data-c="${c}">${it.note ? 'Изменить заметку' : 'Добавить заметку'}</button>
           ${it.owner ? '' : `<button data-a="expires" data-c="${c}">Срок действия</button>`}
           <button data-a="regen" data-c="${c}">Сменить код</button>
-          ${it.device ? `<button data-a="unbind" data-c="${c}">Отвязать телефон</button>` : ''}
+          ${it.device || devs.length ? `<button data-a="unbind" data-c="${c}">${it.owner ? 'Очистить список устройств' : 'Отвязать телефон'}</button>` : ''}
           ${it.owner ? '' : (it.active
             ? `<button class="danger" data-a="disable" data-c="${c}">Отключить</button>`
             : `<button data-a="enable" data-c="${c}">Включить</button>`)}
@@ -346,7 +357,7 @@
           <dt>Отключить</dt><dd>Закрыть доступ. Сработает при следующем запуске приложения с интернетом.</dd>
           <dt>Срок действия</dt><dd>Код сам перестанет работать после выбранной даты.</dd>
           <dt>Сменить код</dt><dd>Старый код сразу перестаёт работать, человек получает новый.</dd>
-          <dt>Отвязать телефон</dt><dd>Если человек сменил телефон: он вводит тот же код на новом.</dd>
+          <dt>Отвязать телефон</dt><dd>Если человек сменил телефон: он вводит тот же код на новом. Код работает только на одном телефоне — кроме твоего кода владельца, он работает везде.</dd>
           <dt>Удалить</dt><dd>Код исчезает из списка навсегда.</dd>
         </dl>
       </section>`;
@@ -528,7 +539,9 @@
     const ask = {
       disable: `Отключить доступ для «${it.name}»?`,
       delete: `Удалить код «${it.name}» навсегда? Человек потеряет доступ к приложению.`,
-      unbind: `Отвязать телефон от кода «${it.name}»? Старый телефон потеряет доступ, код можно будет ввести на новом.`,
+      unbind: it.owner
+        ? 'Очистить список твоих устройств? Входить по коду можно будет как раньше, список начнёт собираться заново.'
+        : `Отвязать телефон от кода «${it.name}»? Старый телефон потеряет доступ, код можно будет ввести на новом.`,
     }[action];
     if (ask && !confirm(ask)) return;
     try {
