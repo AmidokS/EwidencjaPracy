@@ -2,7 +2,7 @@
 /* Учёт работы — PWA. Создатель: Artur Alimhulov.
    Все данные хранятся только на телефоне (localStorage). */
 
-const VERSION = '1.7.1';
+const VERSION = '1.7.2';
 const STORE_KEY = 'uchet-raboty-v1';
 
 /* ===================== Дни ===================== */
@@ -749,23 +749,6 @@ function renderSettings() {
        <input class="field" data-field="rate-point" inputmode="decimal" value="${rate(S.rates.point)}">
        <label class="lbl">${t('За 1 автомат Жабки, zł', 'Za 1 automat Żabki, zł')}</label>
        <input class="field" data-field="rate-machine" inputmode="decimal" value="${rate(S.rates.machine)}">`)}
-    ${card('table', t('Данные', 'Dane'), '',
-      `<p class="muted">${t('Все записи хранятся только на этом телефоне. Делай резервную копию раз в месяц — если удалить приложение с экрана, записи пропадут.',
-        'Wszystkie wpisy są tylko w tym telefonie. Rób kopię zapasową raz w miesiącu — po usunięciu aplikacji z ekranu wpisy znikną.')}</p>
-       <div class="btn-row">
-         <button class="btn tonal" data-act="backup">${ic('download', 18)} ${t('Копия', 'Kopia')}</button>
-         <label class="btn tonal" style="cursor:pointer">${ic('upload', 18)} ${t('Загрузить', 'Wczytaj')}<input type="file" data-import accept=".json,.csv,application/json,text/csv,text/plain" hidden></label>
-       </div>
-       <button class="btn tonal" data-act="export-csv">${ic('table', 18)} ${t('Экспорт в Excel (CSV)', 'Eksport do Excela (CSV)')}</button>`)}
-    ${AUTH_API && S.auth.ok ? card('upload', t('Копия на сервере', 'Kopia na serwerze'),
-      `<label class="switch"><input type="checkbox" data-check="cloud" ${S.cloud.on ? 'checked' : ''} aria-label="${t('Копия на сервере', 'Kopia na serwerze')}"><span></span></label>`,
-      `<p class="muted">${t('Записи автоматически копируются на сервер. Если сменишь телефон или удалишь приложение — введи свой код, и записи вернутся. Копия хранится на сервере владельца приложения; выключишь — она удалится.',
-        'Wpisy są automatycznie kopiowane na serwer. Jeśli zmienisz telefon lub usuniesz aplikację — wpisz swój kod, a wpisy wrócą. Kopia jest przechowywana na serwerze właściciela aplikacji; po wyłączeniu zostanie usunięta.')}</p>
-       ${S.cloud.on ? `<p class="muted small">${t('Последняя копия', 'Ostatnia kopia')}: ${S.cloud.at ? fullDate(S.cloud.at) : '—'}${S.cloud.dirty ? ` · ${t('ждёт отправки', 'czeka na wysłanie')}` : ''}</p>
-       <div class="btn-row">
-         <button class="btn tonal" data-act="cloud-now">${ic('upload', 18)} ${t('Сохранить сейчас', 'Zapisz teraz')}</button>
-         <button class="btn tonal" data-act="cloud-restore">${ic('download', 18)} ${t('Восстановить', 'Przywróć')}</button>
-       </div>` : `<button class="btn tonal" data-act="cloud-restore">${ic('download', 18)} ${t('Восстановить с сервера', 'Przywróć z serwera')}</button>`}`) : ''}
     <div class="footer">
       <div class="c1">${t('Создатель', 'Twórca')}</div>
       <div class="c2">Artur Alimhulov</div>
@@ -1058,8 +1041,6 @@ const actions = {
         $sheet.innerHTML = '';
         render();
         toast(`${t('Добро пожаловать', 'Witaj')}${r.name ? `, ${r.name}` : ''}!`);
-        // Новый телефон, а на сервере есть копия записей — предлагаем вернуть
-        if (r.backupAt && !Object.keys(S.entries).length) setTimeout(() => cloudRestore(true), 400);
         return;
       }
       err.textContent = authMessage((r && r.reason) || 'invalid');
@@ -1238,6 +1219,14 @@ if ('serviceWorker' in navigator && location.protocol !== 'file:') {
   });
 }
 if (navigator.storage && navigator.storage.persist) { navigator.storage.persist().catch(() => {}); }
+
+// Копия на сервере больше не используется. У кого она была включена —
+// удаляем её с сервера (флаг снимаем только после успешного удаления).
+if (S.cloud.on && AUTH_API && S.auth.code) {
+  api('/backup/delete', { code: S.auth.code, device: deviceId() })
+    .then(() => { S.cloud = { on: false, at: 0, dirty: false }; save(); })
+    .catch(() => {});
+}
 
 render(true);
 checkAccess(true);
