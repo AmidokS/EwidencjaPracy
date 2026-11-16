@@ -245,7 +245,7 @@
           ${it.owner
             ? `<dt>Устройства</dt><dd>${devs.length
                 ? devs.map((d) => `${PLATFORM[d.platform] || esc(d.platform || '?')}${d.version ? ` ${esc(d.version)}` : ''} — ${seen(d.last)}`).join('<br>')
-                : 'ещё не входил'}<br><span class="muted small">Твой код работает на любом количестве устройств.</span></dd>`
+                : 'нет — на всех устройствах нужно ввести код'}<br><span class="muted small">Твой код работает на любом количестве устройств. «Выйти на всех устройствах» — если потерял телефон или код мог кто-то узнать.</span></dd>`
             : `<dt>Телефон</dt><dd>${it.device ? `${where(it) || 'привязан'}${isOld(it) ? ' <span class="warn">— старая версия</span>' : ''}` : 'ещё не вводил код'}</dd>`}
           <dt>Последний вход</dt><dd>${when(it.lastSeen)}${ago(it.lastSeen)}</dd>
           <dt>Срок</dt><dd>${it.expires ? `до ${dateOnly(it.expires)}` : 'без срока'}</dd>
@@ -259,7 +259,7 @@
           <button data-a="note" data-c="${c}">${it.note ? 'Изменить заметку' : 'Добавить заметку'}</button>
           ${it.owner ? '' : `<button data-a="expires" data-c="${c}">Срок действия</button>`}
           <button data-a="regen" data-c="${c}">Сменить код</button>
-          ${it.device || devs.length ? `<button data-a="unbind" data-c="${c}">${it.owner ? 'Очистить список устройств' : 'Отвязать телефон'}</button>` : ''}
+          ${it.device || devs.length ? `<button data-a="unbind" data-c="${c}">${it.owner ? 'Выйти на всех устройствах' : 'Отвязать телефон'}</button>` : ''}
           ${it.owner ? '' : (it.active
             ? `<button class="danger" data-a="disable" data-c="${c}">Отключить</button>`
             : `<button data-a="enable" data-c="${c}">Включить</button>`)}
@@ -540,7 +540,7 @@
       disable: `Отключить доступ для «${it.name}»?`,
       delete: `Удалить код «${it.name}» навсегда? Человек потеряет доступ к приложению.`,
       unbind: it.owner
-        ? 'Очистить список твоих устройств? Входить по коду можно будет как раньше, список начнёт собираться заново.'
+        ? 'Выйти на всех твоих устройствах? Приложение на каждом из них попросит ввести код заново (записи на устройствах останутся).'
         : `Отвязать телефон от кода «${it.name}»? Старый телефон потеряет доступ, код можно будет ввести на новом.`,
     }[action];
     if (ask && !confirm(ask)) return;
