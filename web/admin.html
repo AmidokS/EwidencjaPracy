@@ -423,6 +423,13 @@
       </section>
 
       <section class="card">
+        <h3>Письма о проблемах</h3>
+        <p class="muted small">Кому уходят письма из приложения (нет пачки, повреждение и т.п.). Приложение откроет почту человека, где эти адреса уже вписаны в «Кому». Каждый адрес с новой строки, до 5.</p>
+        <textarea class="field" id="mail-to" rows="3" placeholder="adres@firma.pl">${esc((c.mailTo || []).join('\n'))}</textarea>
+        <button class="btn primary" data-s="mail-save">Сохранить</button>
+      </section>
+
+      <section class="card">
         <h3>Работа без интернета</h3>
         <p class="muted small">Сколько дней приложение работает без связи с сервером. Потом попросит включить интернет — так отключённый человек не сможет просто держать интернет выключенным. 0 — без ограничения.</p>
         <div class="two">
@@ -632,6 +639,12 @@
           return saveCfg({ apk: { code, name: v('apk-name'), url: v('apk-url') }, minApk: force ? code : keepMin });
         }
         case 'offline-save': return saveCfg({ offlineDays: v('offline') });
+        case 'mail-save': {
+          const list = v('mail-to').split(/[\s,;]+/).filter(Boolean);
+          const bad = list.filter((s) => !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(s));
+          if (bad.length) { toast(`Не похоже на адрес: ${bad[0]}`); return; }
+          return saveCfg({ mailTo: list }, 'Адреса сохранены');
+        }
       }
       return;
     }

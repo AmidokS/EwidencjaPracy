@@ -2,7 +2,7 @@
 /* Учёт работы — PWA. Создатель: Artur Alimhulov.
    Все данные хранятся только на телефоне (localStorage). */
 
-const VERSION = '2.3';
+const VERSION = '2.4';
 const STORE_KEY = 'uchet-raboty-v1';
 
 /* ===================== Дни ===================== */
@@ -228,6 +228,148 @@ function waStartEnd(which, word) {
   toast(`${label}${day !== td ? ` (${shortD(day)})` : ''}: ${clock(m)}`);
   openWhatsApp(waStatus(word));
 }
+
+/* ===================== Письмо о проблеме ===================== */
+/* Форма: тема (фирма), причина, текст, адрес, фото → открываем почту телефона с готовым письмом.
+   Получатели — из настроек владельца (страница управления). Фото на сервер не уходят. */
+const MAIL_REASONS = [
+  ['uszk', 'Повреждение', 'Uszkodzenie', 'Dzień dobry,\n\ninformuję, że posiłek uległ uszkodzeniu w magazynie i został wyrzucony. Reszta zawartości została przepakowana do nowej torby.'],
+  ['brak', 'Нет пачки', 'Brak paczki', 'Dzień dobry,\n\ninformuję, że na magazynie brakowało paczki dla poniższego adresu.'],
+  ['inne', 'Другое', 'Inne', 'Dzień dobry,\n\n'],
+];
+const mailTo = () => ((S.auth.cfg && S.auth.cfg.mailTo) || []).filter(Boolean);
+let mail = null; // открытая форма: { subject, reason, text, address, photos: [{ file, url }] }
+
+function mailBody() {
+  const a = (mail.address || '').trim();
+  return mail.text.trim() + (a ? `\n\nadres ${a}` : '');
+}
+
+function renderMail() {
+  let root = document.getElementById('mail-root');
+  if (!root) { root = document.createElement('div'); root.id = 'mail-root'; document.body.appendChild(root); }
+  if (!mail) { root.innerHTML = ''; return; }
+  const subjects = S.settings.mailSubjects || [];
+  const to = mailTo();
+  root.innerHTML = `<div class="sheet-bg" data-mail="bg"><div class="sheet mail-sheet" role="dialog" aria-modal="true">
+    <div class="row-between"><h2>${t('Письмо о проблеме', 'Zgłoszenie mailem')}</h2>
+      <button class="round" data-mail="close" aria-label="${t('Закрыть', 'Zamknij')}">${ic('x', 20)}</button></div>
+    <p class="muted small">${t('Кому', 'Do')}: ${to.length ? esc(to.join(', ')) : `<b style="color:var(--error)">${t('адреса не настроены — попроси владельца приложения', 'adresy nie są ustawione — poproś właściciela aplikacji')}</b>`}</p>
+    <label class="lbl">${t('Тема (фирма)', 'Temat (firma)')}</label>
+    <input class="field" id="mail-subject" value="${esc(mail.subject)}" placeholder="Robinfood" maxlength="80" autocomplete="off">
+    ${subjects.length ? `<div class="chips">${subjects.map((s) => `<button class="chip ${s === mail.subject ? 'on' : ''}" data-mail-subj="${esc(s)}">${esc(s)}</button>`).join('')}</div>` : ''}
+    <label class="lbl">${t('Причина', 'Powód')}</label>
+    <div class="seg">${MAIL_REASONS.map(([k, ru, pl]) => `<button class="${mail.reason === k ? 'on' : ''}" data-mail-reason="${k}">${t(ru, pl)}</button>`).join('')}</div>
+    <label class="lbl">${t('Текст письма (можно поправить)', 'Treść (można poprawić)')}</label>
+    <textarea class="field" id="mail-text" rows="5">${esc(mail.text)}</textarea>
+    <label class="lbl">${t('Адрес клиента', 'Adres klienta')}</label>
+    <input class="field" id="mail-address" value="${esc(mail.address)}" placeholder="ul. …, Warszawa" maxlength="160" autocomplete="off">
+    <label class="lbl">${t('Фото', 'Zdjęcia')} · ${mail.photos.length}</label>
+    <div class="mail-photos">
+      ${mail.photos.map((p, i) => `<div class="ph"><img src="${p.url}" alt=""><button data-mail-del="${i}" aria-label="${t('Убрать', 'Usuń')}">${ic('x', 14)}</button></div>`).join('')}
+      <label class="ph add">${ic('camera', 22)}<span>${t('Добавить', 'Dodaj')}</span><input type="file" accept="image/*" multiple hidden data-mail-files></label>
+    </div>
+    <button class="btn primary" data-mail="send">${ic('send', 18)} ${t('Открыть в почте', 'Otwórz w poczcie')}</button>
+    <p class="muted small">${t('Откроется почта с готовым письмом — проверь и нажми «Отправить».', 'Otworzy się poczta z gotowym mailem — sprawdź i naciśnij «Wyślij».')}</p>
+  </div></div>`;
+}
+
+function mailOpen() {
+  const subjects = S.settings.mailSubjects || [];
+  mail = { subject: subjects[0] || '', reason: 'uszk', text: MAIL_REASONS[0][3], address: '', photos: [] };
+  renderMail();
+}
+function mailClose() {
+  if (mail) mail.photos.forEach((p) => URL.revokeObjectURL(p.url));
+  mail = null;
+  renderMail();
+}
+const mailRead = () => {
+  const g = (id) => document.getElementById(id);
+  if (!mail || !g('mail-subject')) return;
+  mail.subject = g('mail-subject').value; mail.text = g('mail-text').value; mail.address = g('mail-address').value;
+};
+
+/** Уменьшаем фото (до 1600 px по большей стороне, JPEG), чтобы письмо не было огромным. */
+async function shrinkPhoto(file, n) {
+  try {
+    const bmp = await createImageBitmap(file, { imageOrientation: 'from-image' });
+    const k = Math.min(1, 1600 / Math.max(bmp.width, bmp.height));
+    const c = document.createElement('canvas');
+    c.width = Math.round(bmp.width * k); c.height = Math.round(bmp.height * k);
+    c.getContext('2d').drawImage(bmp, 0, 0, c.width, c.height);
+    const blob = await new Promise((r) => c.toBlob(r, 'image/jpeg', 0.82));
+    return new File([blob], `zdjecie-${n}.jpg`, { type: 'image/jpeg' });
+  } catch (e) {
+    return file; // не получилось уменьшить — отправим как есть
+  }
+}
+
+async function mailAddFiles(list) {
+  mailRead();
+  for (const f of [...list].slice(0, 10 - mail.photos.length)) {
+    const file = await shrinkPhoto(f, mail.photos.length + 1);
+    mail.photos.push({ file, url: URL.createObjectURL(file) });
+  }
+  renderMail();
+}
+
+async function mailSend() {
+  mailRead();
+  const subject = mail.subject.trim(), body = mailBody(), to = mailTo();
+  if (!subject) { toast(t('Впиши тему — название фирмы', 'Wpisz temat — nazwę firmy')); return; }
+  // Запоминаем тему (последние 5)
+  S.settings.mailSubjects = [subject, ...(S.settings.mailSubjects || []).filter((s) => s !== subject)].slice(0, 5);
+  save();
+  const files = mail.photos.map((p) => p.file);
+  if (files.length && navigator.canShare && navigator.canShare({ files })) {
+    // Через «Поделиться» адресатов передать нельзя — копируем их, человек вставляет в «Кому»
+    if (to.length) await copyText(to.join(', '));
+    try {
+      await navigator.share({ files, title: subject, text: body });
+      toast(to.length ? t('Адреса скопированы — вставь их в «Кому»', 'Adresy skopiowane — wklej je w «Do»') : t('Готово', 'Gotowe'));
+      mailClose();
+    } catch (e) {
+      if (!(e && e.name === 'AbortError')) toast(t('Не получилось открыть почту', 'Nie udało się otworzyć poczty'));
+    }
+    return;
+  }
+  // Без фото или «Поделиться» с файлами не работает (компьютер) — обычная ссылка mailto
+  location.href = `mailto:${to.map(encodeURIComponent).join(',')}?subject=${encodeURIComponent(subject)}&body=${encodeURIComponent(body)}`;
+  if (files.length) toast(t('Фото добавь в письме вручную', 'Zdjęcia dodaj w mailu ręcznie'));
+  mailClose();
+}
+
+document.addEventListener('click', (ev) => {
+  if (!mail) return;
+  const el = ev.target;
+  const m = el.closest('[data-mail]');
+  if (m && (m.dataset.mail !== 'bg' || el === m)) {
+    ev.preventDefault();
+    if (m.dataset.mail === 'close' || m.dataset.mail === 'bg') mailClose();
+    if (m.dataset.mail === 'send') mailSend();
+    return;
+  }
+  const r = el.closest('[data-mail-reason]');
+  if (r) {
+    mailRead();
+    const tpl = MAIL_REASONS.find((x) => x[0] === r.dataset.mailReason);
+    // Текст меняем, только если человек его не правил (он совпадает с прежним шаблоном)
+    const prev = MAIL_REASONS.find((x) => x[0] === mail.reason);
+    if (!mail.text.trim() || (prev && mail.text === prev[3])) mail.text = tpl[3];
+    mail.reason = tpl[0];
+    renderMail();
+    return;
+  }
+  const s = el.closest('[data-mail-subj]');
+  if (s) { mailRead(); mail.subject = s.dataset.mailSubj; renderMail(); return; }
+  const d = el.closest('[data-mail-del]');
+  if (d) { mailRead(); const [p] = mail.photos.splice(Number(d.dataset.mailDel), 1); if (p) URL.revokeObjectURL(p.url); renderMail(); }
+});
+document.addEventListener('change', (ev) => {
+  if (mail && ev.target.dataset.mailFiles !== undefined && ev.target.files && ev.target.files.length) mailAddFiles(ev.target.files);
+});
+document.addEventListener('keydown', (ev) => { if (mail && ev.key === 'Escape') mailClose(); });
 
 /* ===================== Отчёт ===================== */
 function buildReport(p) {
@@ -512,6 +654,8 @@ const ICONS = {
   bell: '<path d="M6 8a6 6 0 0 1 12 0c0 7 3 9 3 9H3s3-2 3-9"/><path d="M10.3 21a1.9 1.9 0 0 0 3.4 0"/>',
   chat: '<path d="M21 11.5a8.4 8.4 0 0 1-12.2 7.5L3 21l2-5.5A8.4 8.4 0 1 1 21 11.5z"/>',
   play: '<path d="M7 4.5v15l12-7.5z"/>',
+  mail: '<rect x="3" y="5" width="18" height="14" rx="2"/><path d="m3 7 9 6 9-6"/>',
+  camera: '<path d="M4 8h3l2-3h6l2 3h3v11H4z"/><circle cx="12" cy="13" r="3.5"/>',
   sync: '<path d="M20 11a8 8 0 0 0-14.3-4.9L4 8"/><path d="M4 3v5h5"/><path d="M4 13a8 8 0 0 0 14.3 4.9L20 16"/><path d="M20 21v-5h-5"/>',
   send: '<path d="M22 2 11 13"/><path d="M22 2 15 22l-4-9-9-4z"/>',
   stop: '<rect x="6" y="6" width="12" height="12" rx="2"/>',
@@ -612,6 +756,9 @@ function renderDay() {
     </div>
 
     <div class="col">
+    ${card('mail', t('Письмо о проблеме', 'Zgłoszenie mailem'), '',
+      `<p class="muted small">${t('Нет пачки, повреждённый товар — письмо с фото на почту фирмы.', 'Brak paczki, uszkodzony towar — mail ze zdjęciami do firmy.')}</p>
+       <button class="btn tonal" data-act="mail-open">${ic('mail', 18)} ${t('Написать письмо', 'Napisz maila')}</button>`)}
     ${card('note', t('Заметка', 'Notatka'), '',
       `<textarea class="field" data-field="note" rows="2" placeholder="${t('Например: не хватило пачки — написать мейл', 'Np. zabrakło paczki — wysłać maila')}">${esc(x.note)}</textarea>
        <div id="note-hint">${noteHint(d, x)}</div>`)}
@@ -1145,6 +1292,7 @@ const actions = {
   'open-day'(el) { ui.day = Number(el.dataset.day); ui.tab = 0; render(true); },
   'm-minus'() { update(ui.day, (x) => { x.machines = Math.max(0, x.machines - 1); }); syncNum('machines'); refreshDay(); },
   'm-plus'() { update(ui.day, (x) => { x.machines += 1; }); syncNum('machines'); refreshDay(); },
+  'mail-open'() { mailOpen(); },
   'wa-start'() { waStartEnd('start', 'Start'); },
   'wa-end'() { waStartEnd('end', 'Koniec'); },
   'wa-mini'() {
@@ -1239,7 +1387,7 @@ document.addEventListener('keydown', (ev) => {
   // На компьютере: стрелки ← → листают день / месяц / период (если не печатаешь и нет окна)
   const tag = (ev.target.tagName || '').toUpperCase();
   if ((ev.key === 'ArrowLeft' || ev.key === 'ArrowRight') && !['INPUT', 'TEXTAREA', 'SELECT'].includes(tag)
-      && !ev.altKey && !ev.ctrlKey && !ev.metaKey && !$sheet.innerHTML.trim() && ui.tab <= 3) {
+      && !ev.altKey && !ev.ctrlKey && !ev.metaKey && !$sheet.innerHTML.trim() && !mail && ui.tab <= 3) {
     ev.preventDefault();
     navigate(ev.key === 'ArrowLeft' ? -1 : 1);
   }
