@@ -2,7 +2,7 @@
 /* Учёт работы — PWA. Создатель: Artur Alimhulov.
    Все данные хранятся только на телефоне (localStorage). */
 
-const VERSION = '2.4';
+const VERSION = '2.5';
 const STORE_KEY = 'uchet-raboty-v1';
 
 /* ===================== Дни ===================== */
@@ -45,8 +45,7 @@ const DEFAULTS = {
   rates: { point: 2.9, machine: 35 },
   report: { points: true, machines: true, hours: false, polish: false },
   // zabka — раздел «Автоматы Жабки»: у новых пользователей выключен (Жабки делают немногие)
-  settings: { lang: 'ru', palette: 0, theme: 'system', header: '', reminders: true, reminderMinute: 480, onboarded: false, zabka: false },
-  dismissed: {},
+  settings: { lang: 'ru', palette: 0, theme: 'system', header: '', onboarded: false, zabka: false },
   installHidden: false,
   auth: { code: '', device: '', ok: false, name: '', reason: '', checkedAt: 0, lastOk: 0, expires: null, cfg: null },
   cloud: { on: false, at: 0, dirty: false },
@@ -72,7 +71,6 @@ function load() {
     if (!raw.settings || raw.settings.zabka === undefined) {
       s.settings.zabka = Object.values(raw.entries || {}).some((x) => x && x.machines > 0);
     }
-    Object.assign(s.dismissed, raw.dismissed || {});
     Object.assign(s.auth, raw.auth || {});
     Object.assign(s.cloud, raw.cloud || {});
     Object.assign(s.sync, raw.sync || {});
@@ -86,8 +84,6 @@ function load() {
 }
 
 function save() {
-  const old = todayDay() - 40;
-  for (const k of Object.keys(S.dismissed)) if (fromIso(k) < old) delete S.dismissed[k];
   try { localStorage.setItem(STORE_KEY, JSON.stringify(S)); } catch (e) { toast(t('Не удалось сохранить', 'Nie udało się zapisać')); }
 }
 
@@ -108,7 +104,6 @@ function update(e, fn) {
   const x = { ...before };
   fn(x);
   if (sameEntry(x, before)) return;
-  if (x.note !== before.note) delete S.dismissed[k];
   const now = Date.now();
   if (isEmptyEntry(x)) {
     delete S.entries[k];
@@ -411,25 +406,6 @@ function buildReport(p) {
   return lines.join('\n').trim();
 }
 
-/* ===================== Напоминания о заметках ===================== */
-/* В PWA на iPhone нельзя запланировать уведомление без сервера,
-   поэтому напоминание показывается баннером при открытии приложения после нужного времени. */
-function reminderTime(e) {
-  const { y, m, d } = ymd(e + 1);
-  const mm = S.settings.reminderMinute;
-  return new Date(y, m - 1, d, Math.floor(mm / 60), mm % 60).getTime();
-}
-function dueReminders() {
-  if (!S.settings.reminders) return [];
-  const now = Date.now(), from = todayDay() - 7;
-  return Object.keys(S.entries)
-    .filter((k) => {
-      const e = fromIso(k), x = S.entries[k];
-      return e >= from && (x.note || '').trim() && !S.dismissed[k] && reminderTime(e) <= now;
-    })
-    .sort()
-    .map(fromIso);
-}
 
 /* ===================== Код доступа ===================== */
 /* Каждый пользователь вводит свой личный код. Код привязывается к одному телефону.
@@ -650,7 +626,6 @@ const ICONS = {
   truck: '<path d="M2 7h12v9H2zM14 10h4l3 3v3h-7"/><circle cx="6" cy="17.5" r="1.8"/><circle cx="17" cy="17.5" r="1.8"/>',
   store: '<path d="M4 9l1.5-5h13L20 9"/><path d="M4 9h16v1.5a2.7 2.7 0 0 1-5.3 0 2.7 2.7 0 0 1-5.4 0A2.7 2.7 0 0 1 4 10.5z"/><path d="M5.5 13v7h13v-7M10 20v-4h4v4"/>',
   clock: '<circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/>',
-  note: '<path d="M6 3h9l4 4v13a1 1 0 0 1-1 1H6a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1z"/><path d="M9 10h6M9 14h6M9 18h3"/>',
   bell: '<path d="M6 8a6 6 0 0 1 12 0c0 7 3 9 3 9H3s3-2 3-9"/><path d="M10.3 21a1.9 1.9 0 0 0 3.4 0"/>',
   chat: '<path d="M21 11.5a8.4 8.4 0 0 1-12.2 7.5L3 21l2-5.5A8.4 8.4 0 1 1 21 11.5z"/>',
   play: '<path d="M7 4.5v15l12-7.5z"/>',
@@ -759,47 +734,15 @@ function renderDay() {
     ${card('mail', t('Письмо о проблеме', 'Zgłoszenie mailem'), '',
       `<p class="muted small">${t('Нет пачки, повреждённый товар — письмо с фото на почту фирмы.', 'Brak paczki, uszkodzony towar — mail ze zdjęciami do firmy.')}</p>
        <button class="btn tonal" data-act="mail-open">${ic('mail', 18)} ${t('Написать письмо', 'Napisz maila')}</button>`)}
-    ${card('note', t('Заметка', 'Notatka'), '',
-      `<textarea class="field" data-field="note" rows="2" placeholder="${t('Например: не хватило пачки — написать мейл', 'Np. zabrakło paczki — wysłać maila')}">${esc(x.note)}</textarea>
-       <div id="note-hint">${noteHint(d, x)}</div>`)}
-
-    <div id="earn" class="first-desk">${earnHtml(d)}</div>
     </div>`;
 }
 
 const hoursPill = (x) => (worked(x) > 0 ? `<span class="pill">${hours(worked(x))}</span>` : '');
 
-function noteHint(d, x) {
-  if (!S.settings.reminders || !(x.note || '').trim()) return '';
-  const at = reminderTime(d);
-  if (at <= Date.now()) return '';
-  return `<div class="remind-hint">${ic('bell', 18)}<span>${t('Напомню', 'Przypomnę')} ${shortD(d + 1)} ${t('после', 'po')} ${clock(S.settings.reminderMinute)}</span></div>`;
-}
-
-function earnHtml(d) {
-  const x = entry(d), p = payPeriod(d), s = summarize(p), pay = payout(p);
-  const zabka = pay.paidNow
-    ? `${pay.machines} Ż ${t('за месяц', 'za miesiąc')}`
-    : `${s.machines} Ż ${t('— в конце месяца', '— na koniec miesiąca')}`;
-  return `<div class="hero">
-    <div class="lbl2">${t('Заработок за день', 'Zarobek za dzień')}</div>
-    <div class="big">${money(dayMoney(x))}</div>
-    <div class="small">${x.points} × ${rate(S.rates.point)}${Z() ? ` + ${x.machines} × ${rate(S.rates.machine)}` : ''}</div>
-    <hr>
-    <div class="row-between">
-      <div><div class="small" style="font-weight:600">${t('К выплате за', 'Do wypłaty za')} ${periodTitle(p)}</div>
-        <div class="small">${s.points} ${t('точек', 'pkt')}${Z() ? ` · ${zabka}` : ''}</div></div>
-      <div style="font-weight:700;font-size:17px;white-space:nowrap">${money(pay.total)}</div>
-    </div>
-  </div>`;
-}
-
 function refreshDay() {
   const x = entry(ui.day);
   const set = (id, html) => { const el = document.getElementById(id); if (el) el.innerHTML = html; };
   set('hours-pill', hoursPill(x));
-  set('note-hint', noteHint(ui.day, x));
-  set('earn', earnHtml(ui.day));
   const ct = document.getElementById('clear-time');
   if (ct) ct.hidden = x.start == null && x.end == null;
   for (const w of ['start', 'end']) {
@@ -824,7 +767,6 @@ function renderCalendar() {
       <b>${k + 1}</b>
       ${x && x.points ? `<span class="cp">${x.points}</span>` : ''}
       ${Z() && x && x.machines ? `<span class="cm">Ż${x.machines}</span>` : ''}
-      ${x && (x.note || '').trim() ? '<i class="dot"></i>' : ''}
     </button>`;
   }
   const halves = [{ start: first, end: dayOf(y, m, 15) }, { start: dayOf(y, m, 16), end: dayOf(y, m, n) }];
@@ -840,9 +782,7 @@ function renderCalendar() {
     <div class="cal-wrap"><div class="cal-head">${heads}</div><div class="cal">${cells}</div></div>
     <div class="legend">
       <span><i style="background:var(--primary)"></i>${t('точки', 'punkty')}</span>
-      ${Z() ? `<span><i style="background:var(--tertiary)"></i>${t('Жабка', 'Żabka')}</span>` : ''}
-      <span><i style="background:var(--error)"></i>${t('заметка', 'notatka')}</span>
-    </div>
+      ${Z() ? `<span><i style="background:var(--tertiary)"></i>${t('Жабка', 'Żabka')}</span>` : ''}    </div>
     </div>
     <div class="col">${halfCards}</div>`;
 }
@@ -898,14 +838,15 @@ function renderReport() {
     return `<button class="trow ${Z() ? '' : 'noz'} ${e === td ? 'today' : ''}" data-act="open-day" data-day="${e}">
       <span>${shortD(e)} ${weekdayShort(e)}</span>
       <span>${x.points || dash}</span>${Z() ? `<span>${x.machines || dash}</span>` : ''}<span>${worked(x) ? hoursShort(worked(x)) : dash}</span>
+      <span class="zl">${dayMoney(x) > 0 ? rate(dayMoney(x)) : dash}</span>
     </button>`;
   }).join('');
   const daysBody = `
     <div>
-      <div class="trow head ${Z() ? '' : 'noz'}"><span>${t('Дата', 'Data')}</span><span>${t('Точки', 'Punkty')}</span>${Z() ? `<span>${t('Жабка', 'Żabka')}</span>` : ''}<span>${t('Часы', 'Godziny')}</span></div>
+      <div class="trow head ${Z() ? '' : 'noz'}"><span>${t('Дата', 'Data')}</span><span>${t('Точки', 'Punkty')}</span>${Z() ? `<span>${t('Жабка', 'Żabka')}</span>` : ''}<span>${t('Часы', 'Godziny')}</span><span class="zl">zł</span></div>
       ${rows}
     </div>
-    <p style="margin:0;font-weight:650;font-size:15px">${t('Итого', 'Razem')}: ${s.points} ${t('точек', 'punktów')}${Z() ? `, ${s.machines} ${t('автоматов', 'automatów')}` : ''}, ${hours(s.minutes)}</p>`;
+    <p style="margin:0;font-weight:650;font-size:15px">${t('Итого', 'Razem')}: ${s.points} ${t('точек', 'punktów')}${Z() ? `, ${s.machines} ${t('автоматов', 'automatów')}` : ''}, ${hours(s.minutes)} · ${money(sumMoney(s))}</p>`;
 
   return `
     ${navHead(periodTitle(p), `${t('Период выплаты', 'Okres rozliczeniowy')} · ${ymd(p.end).y}`)}
@@ -999,12 +940,6 @@ function renderSettings() {
       `<textarea class="field" data-field="header" rows="3" placeholder="${t('Имя Фамилия&#10;Код&#10;Номер', 'Imię Nazwisko&#10;Kod&#10;Numer')}">${esc(st.header)}</textarea>
        <p class="muted small">${t('Эти строки стоят в начале каждого отчёта и в минирапорте. Вторая строка — код для «Start» / «Koniec» в WhatsApp.',
          'Te linie są na początku każdego raportu i w miniraporcie. Druga linia to kod do «Start» / «Koniec» w WhatsApp.')}</p>`)}
-    ${card('bell', t('Напоминание о заметках', 'Przypomnienie o notatkach'),
-      `<label class="switch"><input type="checkbox" data-check="reminders" ${st.reminders ? 'checked' : ''} aria-label="${t('Напоминания', 'Przypomnienia')}"><span></span></label>`,
-      `<p class="muted">${t('Если в заметке за день что-то записано, на следующий день после выбранного времени при открытии приложения появится напоминание с её текстом.',
-        'Jeśli w notatce z danego dnia coś jest, następnego dnia po wybranej godzinie po otwarciu aplikacji pojawi się przypomnienie z jej treścią.')}</p>
-       <div class="row-between"><span>${t('Время напоминания', 'Godzina przypomnienia')}</span>
-         <label class="time-btn">${clock(st.reminderMinute)}<input type="time" data-reminder-time value="${clock(st.reminderMinute)}" ${st.reminders ? '' : 'disabled'}></label></div>`)}
     ${card('store', t('Автоматы Жабки', 'Automaty Żabki'),
       `<label class="switch"><input type="checkbox" data-check="zabka" ${st.zabka ? 'checked' : ''} aria-label="${t('Автоматы Жабки', 'Automaty Żabki')}"><span></span></label>`,
       `<p class="muted">${t('Включи, если делаешь Жабки. Выключено — Жабок нет на экране «День», в календаре, итогах и отчёте, считаются только точки. Уже записанные Жабки не удаляются.',
@@ -1074,17 +1009,9 @@ function renderTop() {
       <button data-act="open-report">${t('Отчёт', 'Raport')}</button>
       <button class="x" data-act="hide-report" aria-label="${t('Закрыть', 'Zamknij')}">${ic('x', 18)}</button></div>`;
   }
-  for (const d of dueReminders()) {
-    const x = entry(d);
-    html += `<div class="banner">${ic('bell', 20)}<div class="bt"><b>${t('Заметка за', 'Notatka z')} ${shortD(d)}</b><p>${esc(x.note)}</p></div>
-      <button data-act="dismiss" data-day="${d}">${t('Готово', 'Gotowe')}</button></div>`;
-  }
   $top.innerHTML = html;
-  const count = dueReminders().length;
-  try {
-    if (count && navigator.setAppBadge) navigator.setAppBadge(count);
-    else if (navigator.clearAppBadge) navigator.clearAppBadge();
-  } catch (e) { /* не поддерживается */ }
+  // Значок с числом на иконке раньше показывал напоминания о заметках — убираем его
+  try { if (navigator.clearAppBadge) navigator.clearAppBadge(); } catch (e) { /* не поддерживается */ }
 }
 
 /* ===================== Окно приветствия ===================== */
@@ -1342,7 +1269,6 @@ const actions = {
   palette(el) { S.settings.palette = Number(el.dataset.v); save(); render(); },
   theme(el) { S.settings.theme = el.dataset.v; save(); render(); },
   start() { S.settings.onboarded = true; save(); render(); },
-  dismiss(el) { S.dismissed[iso(Number(el.dataset.day))] = true; save(); renderTop(); },
   'hide-install'() { S.installHidden = true; save(); renderTop(); },
   async install() { if (!installEvent) return; installEvent.prompt(); try { await installEvent.userChoice; } catch (e) { /* ignore */ } installEvent = null; render(); },
   'open-report'() { ui.tab = 2; ui.period = periodIndex(payPeriod(todayDay())); render(true); },
@@ -1369,7 +1295,6 @@ function syncNum(field) {
 const fields = {
   points(el) { const v = el.value.replace(/\D/g, '').slice(0, 4); if (v !== el.value) el.value = v; update(ui.day, (x) => { x.points = Number(v) || 0; }); refreshDay(); },
   machines(el) { const v = el.value.replace(/\D/g, '').slice(0, 3); if (v !== el.value) el.value = v; update(ui.day, (x) => { x.machines = Number(v) || 0; }); refreshDay(); },
-  note(el) { update(ui.day, (x) => { x.note = el.value; }); refreshDay(); renderTop(); },
   header(el) { S.settings.header = el.value; metaChanged(); save(); },
   'rate-point'(el) { const v = parseFloat(el.value.replace(',', '.')); if (Number.isFinite(v) && v >= 0) { S.rates.point = v; metaChanged(); save(); } },
   'rate-machine'(el) { const v = parseFloat(el.value.replace(',', '.')); if (Number.isFinite(v) && v >= 0) { S.rates.machine = v; metaChanged(); save(); } },
@@ -1414,12 +1339,7 @@ document.addEventListener('change', (ev) => {
   const el = ev.target;
   if (el.dataset.time !== undefined) onTime(el);
   if (el.dataset.date !== undefined && el.value) { ui.day = fromIso(el.value); render(true); }
-  if (el.dataset.check === 'reminders') { S.settings.reminders = el.checked; save(); render(); }
   if (el.dataset.check === 'zabka') { S.settings.zabka = el.checked; save(); render(); }
-  if (el.dataset.reminderTime !== undefined) {
-    const m = parseClock(el.value);
-    if (m != null) { S.settings.reminderMinute = m; save(); render(); }
-  }
   if (el.dataset.field === 'rate-point' || el.dataset.field === 'rate-machine') render();
 });
 

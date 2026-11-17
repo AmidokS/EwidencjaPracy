@@ -217,12 +217,13 @@ button:disabled { opacity: .45; cursor: default; }
 
 /* ---------- Таблица дней ---------- */
 .trow {
-  display: grid; grid-template-columns: 1.5fr 1fr 1fr 1fr; align-items: center;
+  display: grid; grid-template-columns: 1.45fr .8fr .7fr .8fr 1.05fr; align-items: center; column-gap: 4px;
   width: 100%; padding: 10px 0; border: 0; border-bottom: 1px solid var(--outline-v);
   background: none; text-align: left; font-size: 15px; color: var(--text);
 }
 .trow.head { font-size: 12px; font-weight: 600; color: var(--text2); padding-top: 0; }
-.trow.noz { grid-template-columns: 1.5fr 1fr 1fr; } /* без колонки «Жабка» */
+.trow.noz { grid-template-columns: 1.5fr .9fr .9fr 1.1fr; } /* без колонки «Жабка» */
+.trow .zl { text-align: right; font-weight: 600; white-space: nowrap; } /* заработок за день */
 .trow .dash { color: var(--outline); }
 .trow.today span:first-child { color: var(--primary); font-weight: 700; }
 .mono {
