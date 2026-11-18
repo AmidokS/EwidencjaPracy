@@ -256,6 +256,19 @@ button:disabled { opacity: .45; cursor: default; }
 .zq .ic { color: var(--primary); }
 .zq-n { width: 22px; height: 22px; border-radius: 50%; display: grid; place-items: center; font: 700 12px var(--rounded);
         background: var(--outline-v); color: var(--text2); }
+.zlinks { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 8px; }
+.zlinks .link, .card .link .ic { vertical-align: -3px; }
+.zweek-sheet { gap: 12px; }
+.zweek { display: flex; flex-direction: column; border-radius: 14px; overflow: hidden; background: var(--card-hi); }
+.zw-row { display: flex; align-items: center; gap: 6px; padding-right: 10px; }
+.zw-row + .zw-row { border-top: 1px solid var(--outline-v); }
+.zw-row.today { background: color-mix(in srgb, var(--primary) 14%, transparent); }
+.zw-day { flex: 1; min-width: 0; display: grid; grid-template-columns: 56px 1fr auto; align-items: center; gap: 10px;
+          border: 0; background: none; color: var(--text); padding: 11px 12px; text-align: left; font-size: 14px; }
+.zw-day b { font: 700 14px var(--rounded); }
+.zw-day span:nth-child(2) { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+.zw-n { font: 700 13px var(--rounded); padding: 2px 9px; border-radius: 999px; background: var(--pc); color: var(--on-pc); }
+.zw-copy { flex: none; font-size: 13px; }
 .zcount { font: 700 14px var(--rounded); padding: 3px 10px; border-radius: 999px; background: var(--card-hi); color: var(--text2); white-space: nowrap; }
 .zcount.full { background: var(--primary); color: var(--on-primary); }
 .zdone { display: flex; flex-wrap: wrap; gap: 6px; }

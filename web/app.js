@@ -2,7 +2,7 @@
 /* Учёт работы — PWA. Создатель: Artur Alimhulov.
    Данные хранятся на телефоне (localStorage) и копией на сервере под кодом доступа (см. «Записи на сервере»). */
 
-const VERSION = '3.5';
+const VERSION = '3.6';
 const STORE_KEY = 'uchet-raboty-v1';
 
 /* ==== calc:begin ====
@@ -434,29 +434,17 @@ function zabkiCard(d) {
   const plan = entry(d).z || [], list = zlist();
   const done = plan.filter((i) => i.a).length;
   let body;
+  const weekBtn = list.length ? `<button class="link" data-act="z-week">${ic('calendar', 16)} ${t('План на неделю', 'Plan na tydzień')}</button>` : '';
   if (zpick) {
-    const items = [...new Set([...list, ...plan.map((i) => i.t)])];
-    const chosen = items.filter((s) => plan.some((i) => i.t === s)).length;
-    body = items.length
-      ? `<div class="zpick-head">
-          <span>${t('Выбрано', 'Wybrano')} <b>${chosen}</b> ${t('из', 'z')} ${items.length}</span>
-          <button class="link" data-act="z-all" data-on="${chosen < items.length ? 1 : 0}">${chosen < items.length ? t('Выбрать все', 'Zaznacz wszystkie') : t('Снять все', 'Odznacz wszystkie')}</button>
-        </div>
-        <p class="muted small" style="margin:0">${t('Отмечай по порядку работы: номер — очередь. Чтобы поменять порядок, сними и отметь снова.', 'Zaznaczaj w kolejności pracy: numer to kolejka. Aby zmienić kolejność, odznacz i zaznacz ponownie.')}</p>
-        <div class="zpick">${items.map((s) => {
-          const k = plan.findIndex((i) => i.t === s), on = k >= 0, p = zParts(s);
-          return `<button class="zp ${on ? 'on' : ''}" data-act="z-toggle" data-t="${esc(s)}" aria-pressed="${on}">
-            <span class="zp-txt"><b>${esc(p.code)}</b>${p.rest ? `<small>${esc(p.rest)}</small>` : ''}</span>
-            <span class="zp-box">${on ? k + 1 : ''}</span></button>`;
-        }).join('')}</div>
-        <button class="btn primary" data-act="z-pick-done">${t('Готово', 'Gotowe')}</button>`
-      : `<p class="muted">${t('Список Жабок пуст — добавь свои Жабки в Настройках (по одной в строке).', 'Lista Żabek jest pusta — dodaj swoje Żabki w Ustawieniach (jedna w linii).')}</p>
-        <button class="btn tonal" data-act="z-pick-done">${t('Закрыть', 'Zamknij')}</button>`;
+    body = `${zPickListHtml(d, (a) => `data-act="z-${a}"`)}
+      ${list.length || plan.length ? `<p class="muted small" style="margin:0">${t('Отмечай по порядку работы: номер — очередь. Чтобы поменять порядок, сними и отметь снова.', 'Zaznaczaj w kolejności pracy: numer to kolejka. Aby zmienić kolejność, odznacz i zaznacz ponownie.')}</p>` : ''}
+      <button class="btn primary" data-act="z-pick-done">${t('Готово', 'Gotowe')}</button>`;
   } else if (!plan.length) {
     body = `<p class="muted small">${list.length
       ? t(`Жабок в твоём списке: ${list.length}. Выбери, какие будут в этот день.`, `Żabek na Twojej liście: ${list.length}. Wybierz, które będą w tym dniu.`)
       : t('Добавь свои Жабки в Настройках — потом здесь выбираешь, какие в этот день, и отправляешь отчёты с фото.', 'Dodaj swoje Żabki w Ustawieniach — potem tu wybierasz, które w tym dniu, i wysyłasz raporty ze zdjęciami.')}</p>
-      <button class="btn tonal" data-act="z-pick">${ic('check', 18)} ${t('Выбрать Жабки на этот день', 'Wybierz Żabki na ten dzień')}</button>`;
+      <button class="btn tonal" data-act="z-pick">${ic('check', 18)} ${t('Выбрать Жабки на этот день', 'Wybierz Żabki na ten dzień')}</button>
+      ${weekBtn}`;
   } else {
     // Очередь — в порядке выбора. Следующая — крупно, остальные — тонкими строками (любую можно сделать
     // не по очереди), сделанные — внизу маленькими метками (нажатие — открыть снова).
@@ -478,7 +466,7 @@ function zabkiCard(d) {
       }).join('')}</div>` : ''}
       ${sent.length ? `<div class="zdone">${sent.map(({ i, n }) =>
         `<button class="zchip" data-act="z-rep" data-n="${n}" title="${esc(i.t)}">${ic('check', 14)} ${esc(zParts(i.t).code)}</button>`).join('')}</div>` : ''}
-      <button class="link" data-act="z-pick">${t('Изменить выбор', 'Zmień wybór')}</button>`;
+      <div class="zlinks"><button class="link" data-act="z-pick">${t('Изменить выбор', 'Zmień wybór')}</button>${weekBtn}</div>`;
   }
   return card('store', t('Отчёты Жабок', 'Raporty Żabek'),
     plan.length ? `<span class="zcount ${done === plan.length ? 'full' : ''}">${done} / ${plan.length}</span>` : '', body);
@@ -500,6 +488,111 @@ function zParts(line) {
 function zCount(x, oldLen) {
   if ((x.machines || 0) === oldLen) x.machines = (x.z || []).length;
 }
+
+/** Отметить / снять Жабку в плане дня. Порядок выбора = порядок работы: новая встаёт в конец очереди. */
+function zToggle(day, s) {
+  update(day, (x) => {
+    const plan = x.z || [];
+    x.z = plan.some((i) => i.t === s) ? plan.filter((i) => i.t !== s) : [...plan, { t: s, a: false, b: false }];
+    zCount(x, plan.length);
+  });
+}
+/** «Выбрать все» (уже выбранные — в своём порядке, остальные — в конец) или «Снять все». */
+function zAll(day, on) {
+  update(day, (x) => {
+    const plan = x.z || [];
+    if (!on) { x.z = []; zCount(x, plan.length); return; }
+    const have = new Set(plan.map((i) => i.t));
+    x.z = [...plan, ...zlist().filter((s) => !have.has(s)).map((s) => ({ t: s, a: false, b: false }))];
+    zCount(x, plan.length);
+  });
+}
+/** «Как вчера»: те же Жабки в том же порядке, что в предыдущий день (отчёты — не отправлены). */
+function zCopyPrev(day) {
+  const prev = entry(day - 1).z || [];
+  update(day, (x) => { const old = (x.z || []).length; x.z = prev.map((i) => ({ t: i.t, a: false, b: false })); zCount(x, old); });
+}
+
+/* ===================== План Жабок на неделю ===================== */
+/* График приходит раз в неделю — здесь видно все 7 дней сразу и можно выбрать Жабки на каждый. */
+let zweek = null; // { start: понедельник (номер дня), pick: день, для которого открыт выбор, или null }
+
+function zPickListHtml(day, attr) { // attr(«toggle» | «all») → атрибут кнопки
+  const plan = entry(day).z || [];
+  const items = [...new Set([...zlist(), ...plan.map((i) => i.t)])];
+  if (!items.length) return `<p class="muted">${t('Список Жабок пуст — добавь свои Жабки в Настройках (по одной в строке).', 'Lista Żabek jest pusta — dodaj swoje Żabki w Ustawieniach (jedna w linii).')}</p>`;
+  const chosen = items.filter((s) => plan.some((i) => i.t === s)).length;
+  return `<div class="zpick-head">
+      <span>${t('Выбрано', 'Wybrano')} <b>${chosen}</b> ${t('из', 'z')} ${items.length}</span>
+      <button class="link" ${attr('all')} data-on="${chosen < items.length ? 1 : 0}">${chosen < items.length ? t('Выбрать все', 'Zaznacz wszystkie') : t('Снять все', 'Odznacz wszystkie')}</button>
+    </div>
+    <div class="zpick">${items.map((s) => {
+      const k = plan.findIndex((i) => i.t === s), on = k >= 0, p = zParts(s);
+      return `<button class="zp ${on ? 'on' : ''}" ${attr('toggle')} data-t="${esc(s)}" aria-pressed="${on}">
+        <span class="zp-txt"><b>${esc(p.code)}</b>${p.rest ? `<small>${esc(p.rest)}</small>` : ''}</span>
+        <span class="zp-box">${on ? k + 1 : ''}</span></button>`;
+    }).join('')}</div>`;
+}
+
+function renderZweek() {
+  let root = document.getElementById('zweek-root');
+  if (!root) { root = document.createElement('div'); root.id = 'zweek-root'; document.body.appendChild(root); }
+  if (!zweek) { root.innerHTML = ''; return; }
+  const scroll = root.querySelector('.sheet') ? root.querySelector('.sheet').scrollTop : 0;
+  const { start, pick } = zweek;
+  let body;
+  if (pick != null) {
+    body = `<div class="row-between"><h2>${esc(DAYS[L()][weekday(pick)])} ${shortD(pick)}</h2>
+        <button class="round" data-zw="back" aria-label="${t('Назад', 'Wstecz')}">${ic('back', 20)}</button></div>
+      ${zPickListHtml(pick, (a) => `data-zw="${a}"`)}
+      <button class="btn primary" data-zw="back">${t('Готово', 'Gotowe')}</button>`;
+  } else {
+    const days = [0, 1, 2, 3, 4, 5, 6].map((k) => start + k);
+    const td = todayDay();
+    body = `<div class="row-between">
+        <button class="round" data-zw="prev" aria-label="${t('Предыдущая неделя', 'Poprzedni tydzień')}">${ic('chevL', 20)}</button>
+        <div style="text-align:center"><h2 style="margin:0">${t('План Жабок', 'Plan Żabek')}</h2>
+          <div class="muted small">${shortD(start)}–${shortD(start + 6)}</div></div>
+        <button class="round" data-zw="next" aria-label="${t('Следующая неделя', 'Następny tydzień')}">${ic('chevR', 20)}</button>
+      </div>
+      <div class="zweek">${days.map((d) => {
+        const x = entry(d), plan = x.z || [], prev = entry(d - 1).z || [];
+        const codes = plan.map((i) => esc(zParts(i.t).code)).join(' · ');
+        // Без выбора, но Жабки записаны вручную (как раньше) — показываем, сколько
+        const empty = x.machines ? t(`вручную: ${x.machines}`, `ręcznie: ${x.machines}`) : t('не выбрано', 'nie wybrano');
+        return `<div class="zw-row ${d === td ? 'today' : ''}">
+          <button class="zw-day" data-zw="pick" data-d="${d}">
+            <b>${DAYS_SHORT[L()][weekday(d)]} ${ymd(d).d}</b>
+            <span class="${plan.length ? '' : 'muted'}">${plan.length ? codes : empty}</span>
+            ${plan.length ? `<span class="zw-n">${plan.length}</span>` : ''}
+          </button>
+          ${!plan.length && prev.length ? `<button class="link zw-copy" data-zw="copy" data-d="${d}">${t('как вчера', 'jak wczoraj')}</button>` : ''}
+        </div>`;
+      }).join('')}</div>
+      <p class="muted small" style="margin:0;text-align:center">${t('Нажми на день, чтобы выбрать Жабки', 'Dotknij dnia, aby wybrać Żabki')}</p>
+      <button class="btn tonal" data-zw="close">${t('Закрыть', 'Zamknij')}</button>`;
+  }
+  root.innerHTML = `<div class="sheet-bg" data-zw="bg"><div class="sheet zweek-sheet" role="dialog" aria-modal="true">${body}</div></div>`;
+  const sh = root.querySelector('.sheet'); if (sh && pick != null) sh.scrollTop = scroll;
+}
+
+document.addEventListener('click', (ev) => {
+  if (!zweek) return;
+  const b = ev.target.closest('[data-zw]');
+  if (!b || (b.dataset.zw === 'bg' && ev.target !== b)) return;
+  ev.preventDefault();
+  const a = b.dataset.zw, d = Number(b.dataset.d);
+  if (a === 'bg' || a === 'close') { zweek = null; renderZweek(); render(); return; }
+  if (a === 'prev') zweek.start -= 7;
+  if (a === 'next') zweek.start += 7;
+  if (a === 'pick') zweek.pick = d;
+  if (a === 'back') zweek.pick = null;
+  if (a === 'copy') zCopyPrev(d);
+  if (a === 'toggle') zToggle(zweek.pick, b.dataset.t);
+  if (a === 'all') zAll(zweek.pick, b.dataset.on === '1');
+  renderZweek();
+});
+document.addEventListener('keydown', (ev) => { if (zweek && ev.key === 'Escape') { zweek = null; renderZweek(); render(); } });
 
 /** Отметить отчёт по Жабке отправленным (или снять отметку). */
 function zMark(day, text, on) {
@@ -1317,8 +1410,6 @@ function renderSettings() {
           'Wpisy, stawki i nagłówek są w kopii na serwerze pod Twoim kodem. Zmienisz telefon — wpisz kod na nowym i wszystko będzie na miejscu.')}</p>
        <p class="muted small">${t('Последняя синхронизация', 'Ostatnia synchronizacja')}: ${S.sync.at ? fullDate(S.sync.at) : '—'}${hasPendingSync() ? ` · ${t('есть неотправленное', 'są niewysłane zmiany')}` : ''}</p>
        <button class="btn tonal" data-act="sync-now">${ic('sync', 18)} ${t('Синхронизировать сейчас', 'Synchronizuj teraz')}</button>
-       <p class="muted small" style="margin:0">${t('Нужно зайти под кодом коллеги (например, добавить ему Жабку)? Выйди и введи его код. Потом выйди и введи свой — твои записи вернутся.',
-         'Musisz wejść na kod kolegi (np. dopisać mu Żabkę)? Wyloguj się i wpisz jego kod. Potem wyloguj się i wpisz swój — Twoje wpisy wrócą.')}</p>
        <button class="btn tonal" data-act="logout">${ic('back', 18)} ${t('Выйти', 'Wyloguj')} · ${esc(prettyCode(S.auth.code))}${S.auth.name ? ` (${esc(S.auth.name)})` : ''}</button>`) : ''}
     </div>
     <div class="footer">
@@ -1588,28 +1679,9 @@ const actions = {
   'mail-open'() { mailOpen(); },
   'z-pick'() { zpick = true; render(); },
   'z-pick-done'() { zpick = false; render(); },
-  'z-all'(el) {
-    const on = el.dataset.on === '1';
-    update(ui.day, (x) => {
-      const plan = x.z || [];
-      if (!on) { x.z = []; zCount(x, plan.length); return; }
-      // Уже выбранные остаются в своём порядке, остальные — в конец, по порядку списка
-      const have = new Set(plan.map((i) => i.t));
-      x.z = [...plan, ...zlist().filter((s) => !have.has(s)).map((s) => ({ t: s, a: false, b: false }))];
-      zCount(x, plan.length);
-    });
-    render();
-  },
-  'z-toggle'(el) {
-    const s = el.dataset.t, order = zlist();
-    update(ui.day, (x) => {
-      const plan = x.z || [];
-      // Порядок выбора = порядок работы: новая Жабка встаёт в конец очереди
-      x.z = plan.some((i) => i.t === s) ? plan.filter((i) => i.t !== s) : [...plan, { t: s, a: false, b: false }];
-      zCount(x, plan.length);
-    });
-    render();
-  },
+  'z-all'(el) { zAll(ui.day, el.dataset.on === '1'); render(); },
+  'z-toggle'(el) { zToggle(ui.day, el.dataset.t); render(); },
+  'z-week'() { zweek = { start: ui.day - weekday(ui.day), pick: null }; renderZweek(); },
   'z-rep'(el) {
     const item = (entry(ui.day).z || [])[Number(el.dataset.n)];
     if (!item) return;
