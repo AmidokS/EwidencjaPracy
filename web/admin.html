@@ -90,6 +90,7 @@
     .rec-table td.rnote { color: var(--text2); overflow-wrap: anywhere; }
     .rec-meta { font-size: 13px; color: var(--text2); white-space: pre-wrap; }
     .rec-table tbody tr { cursor: pointer; }
+    .rec-table .zs { font-size: 12px; margin-top: 2px; }
     .rec-table tbody tr:hover td { background: var(--card-hi); }
     .rec-edit { display: flex; flex-direction: column; gap: 8px; }
     .re-step { display: flex; gap: 6px; }
@@ -439,6 +440,7 @@
         <div class="acts">
           <button class="main" data-a="invite" data-c="${c}">Копировать приглашение</button>
           <button class="main alt" data-a="records" data-c="${c}">Записи</button>
+          <button data-a="zlist" data-c="${c}">Список Жабок</button>
           <button data-a="rename" data-c="${c}">Переименовать</button>
           <button data-a="note" data-c="${c}">${it.note ? 'Изменить заметку' : 'Добавить заметку'}</button>
           ${it.owner ? '' : `<button data-a="expires" data-c="${c}">Срок действия</button>`}
@@ -562,6 +564,7 @@
           <dt>Отключить</dt><dd>Закрыть доступ. Сработает при следующем запуске приложения с интернетом.</dd>
           <dt>Срок действия</dt><dd>Код сам перестанет работать после выбранной даты.</dd>
           <dt>Сменить код</dt><dd>Старый код сразу перестаёт работать, человек получает новый. Записи на сервере переезжают на новый код.</dd>
+          <dt>Список Жабок</dt><dd>Жабки человека на эту неделю — по одной в строке, как они уходят в WhatsApp. Человек может поправить список и сам в приложении. В «Записях» видно, по каким Жабкам отправлен отчёт.</dd>
           <dt>Выйти на всех устройствах</dt><dd>Если человек потерял телефон или код мог кто-то узнать: все устройства с этим кодом попросят ввести его заново. Код работает на любом устройстве — в приложении есть «Выйти», чтобы зайти под кодом коллеги.</dd>
           <dt>Записи</dt><dd>Записи человека: дни, итоги и выплата по половинам месяца, что пришло на счёт. Нажми на день, чтобы исправить — например, добавить Жабку, которую сделали вместо него. Правка придёт ему при следующей синхронизации.</dd>
           <dt>Удалить</dt><dd>Код исчезает из списка навсегда вместе с записями на сервере.</dd>
@@ -685,7 +688,7 @@
       const entries = {};
       for (const [k, d] of Object.entries(r.days || {})) {
         if (d.del) continue;
-        entries[k] = { points: d.p || 0, machines: d.m || 0, start: d.s ?? null, end: d.e ?? null, note: d.n || '' };
+        entries[k] = { points: d.p || 0, machines: d.m || 0, start: d.s ?? null, end: d.e ?? null, note: d.n || '', z: d.z || [] };
       }
       const meta = r.meta || {};
       const rates = meta.rates && meta.rates.point > 0 ? meta.rates : { point: 2.9, machine: 35 };
@@ -738,7 +741,8 @@
       if (!x) continue;
       const wd = WD[new Date(y, m - 1, d).getDay()];
       rows.push(`<tr data-rd="${k}" title="Нажми, чтобы исправить"><td>${p2(d)}.${p2(m)} ${wd}</td><td class="n">${x.points || '—'}</td>${s.zabka ? `<td class="n">${x.machines || '—'}</td>` : ''}
-        <td class="n">${C.worked(x) ? hm(C.worked(x)) : '—'}</td><td class="rnote">${esc(x.note || '')}</td></tr>`);
+        <td class="n">${C.worked(x) ? hm(C.worked(x)) : '—'}</td><td class="rnote">${esc(x.note || '')}${(x.z || []).map((i) =>
+          `<div class="zs">${esc(i.t)} · ${i.a ? '<span class="rec-ok">✓ отчёт отправлен</span>' : '<span class="muted">отчёт не отправлен</span>'}</div>`).join('')}</td></tr>`);
     }
     if (s.edit) return `${head}${editDayHtml(s)}`;
     const ym = `${y}-${p2(m)}`;
@@ -1069,6 +1073,22 @@
     if (!it) return;
     if (action === 'invite') { copy(invite(it)); return; }
     if (action === 'records') { openRecords(it); return; }
+    if (action === 'zlist') {
+      let cur = [];
+      try { cur = ((await call(`/admin/records?code=${encodeURIComponent(code)}`)).meta || {}).zlist || []; }
+      catch (e) { toast('Не удалось загрузить список'); return; }
+      const v = await dialog({
+        title: `Жабки · ${it.name}`,
+        text: 'По одной Жабке в строке — так, как она уходит в WhatsApp (в конце приложение само допишет «przed/po»). Придёт человеку при следующей синхронизации.',
+        field: { kind: 'note', value: cur.join('\n'), max: 12000, placeholder: 'Bosch, Warszawa, Jutrzenki 105, ZG356-1' },
+      });
+      if (v === null || v.trim() === cur.join('\n')) return;
+      try {
+        const r = await call('/admin/zlist', 'POST', { code, list: v.split('\n') });
+        toast(`Сохранено: ${r.zlist.length} ${plural(r.zlist.length, 'Жабка', 'Жабки', 'Жабок')}`);
+      } catch (e) { toast('Ошибка'); }
+      return;
+    }
     if (action === 'regen') {
       if (!await dialog({ title: 'Сменить код?', text: `«${it.name}» получит новый код. Старый код ${it.code} сразу перестанет работать — человеку нужно будет ввести новый.`, ok: 'Сменить код' })) return;
       try {

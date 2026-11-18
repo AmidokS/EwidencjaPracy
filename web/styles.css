@@ -236,6 +236,21 @@ button:disabled { opacity: .45; cursor: default; }
 .money-row span:last-child { font-weight: 600; }
 .total { display: flex; justify-content: space-between; align-items: center; border-top: 1px solid var(--outline-v); padding-top: 12px; }
 .total b { font: 650 24px var(--rounded); color: var(--primary); }
+/* Отчёты Жабок */
+.zlist { display: flex; flex-direction: column; gap: 8px; }
+.zrow { background: var(--card-hi); border-radius: 14px; padding: 10px 12px; display: flex; flex-direction: column; gap: 8px; }
+.zt { font-size: 14px; font-weight: 600; overflow-wrap: anywhere; }
+.zbtns { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+.zb { display: inline-flex; align-items: center; justify-content: center; gap: 6px; border: 0; border-radius: 12px; padding: 9px 10px;
+      font-size: 14px; font-weight: 650; background: var(--sc); color: var(--on-sc); }
+.zb.done { background: var(--primary); color: var(--on-primary); }
+.zpick { display: flex; flex-direction: column; gap: 6px; }
+.zp { display: flex; align-items: center; gap: 8px; text-align: left; border: 1px solid var(--outline-v); border-radius: 12px; padding: 9px 12px;
+      background: none; color: var(--text); font-size: 14px; }
+.zp span { overflow-wrap: anywhere; }
+.zp.on { background: var(--pc); color: var(--on-pc); border-color: transparent; font-weight: 600; }
+.ztext { background: var(--card-hi); border-radius: 12px; padding: 10px 12px; font-size: 15px; font-weight: 600; overflow-wrap: anywhere; }
+
 /* Сверка выплаты */
 .paid { display: flex; flex-direction: column; gap: 6px; border-top: 1px solid var(--outline-v); padding-top: 12px; }
 .paid-ok, .paid-less, .paid-more { display: inline-flex; align-items: center; gap: 6px; font-weight: 650; font-size: 15px; }

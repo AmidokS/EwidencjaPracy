@@ -2,7 +2,7 @@
 /* Учёт работы — PWA. Создатель: Artur Alimhulov.
    Данные хранятся на телефоне (localStorage) и копией на сервере под кодом доступа (см. «Записи на сервере»). */
 
-const VERSION = '3.0';
+const VERSION = '3.1';
 const STORE_KEY = 'uchet-raboty-v1';
 
 /* ==== calc:begin ====
@@ -83,7 +83,7 @@ const DEFAULTS = {
   rates: { point: 2.9, machine: 35 },
   report: { points: true, machines: true, hours: false, polish: false },
   // zabka — раздел «Автоматы Жабки»: у новых пользователей выключен (Жабки делают немногие)
-  settings: { lang: 'ru', palette: 0, theme: 'system', header: '', onboarded: false, zabka: false },
+  settings: { lang: 'ru', palette: 0, theme: 'system', header: '', onboarded: false, zabka: false, zlist: [] },
   installHidden: false,
   auth: { code: '', device: '', ok: false, name: '', reason: '', checkedAt: 0, lastOk: 0, expires: null, cfg: null },
   cloud: { on: false, at: 0, dirty: false },
@@ -130,15 +130,17 @@ function save() {
   try { localStorage.setItem(STORE_KEY, JSON.stringify(S)); } catch (e) { toast(t('Не удалось сохранить', 'Nie udało się zapisać')); }
 }
 
-const blank = () => ({ points: 0, machines: 0, start: null, end: null, note: '' });
+/* z — план Жабок на день: [{ t: строка Жабки, a: отчёт «przed» отправлен, b: «po» отправлен }] */
+const blank = () => ({ points: 0, machines: 0, start: null, end: null, note: '', z: [] });
 const entry = (e) => S.entries[iso(e)] || blank();
-const isEmptyEntry = (x) => !x.points && !x.machines && x.start == null && x.end == null && !(x.note || '').trim();
+const isEmptyEntry = (x) => !x.points && !x.machines && x.start == null && x.end == null && !(x.note || '').trim() && !(x.z && x.z.length);
+const sameZ = (a, b) => JSON.stringify(a || []) === JSON.stringify(b || []);
 /** Включён ли раздел «Автоматы Жабки» (Настройки). Выключен — Жабки нигде не видны и не считаются. */
 const Z = () => !!S.settings.zabka;
 const isWork = (x) => isWorkDay(x, Z());
 const dayMoney = (x) => x.points * S.rates.point + (Z() ? x.machines * S.rates.machine : 0);
 
-const sameEntry = (a, b) => a.points === b.points && a.machines === b.machines && a.start === b.start && a.end === b.end && (a.note || '') === (b.note || '');
+const sameEntry = (a, b) => a.points === b.points && a.machines === b.machines && a.start === b.start && a.end === b.end && (a.note || '') === (b.note || '') && sameZ(a.z, b.z);
 
 function update(e, fn) {
   const k = iso(e);
@@ -401,6 +403,132 @@ document.addEventListener('change', (ev) => {
 });
 document.addEventListener('keydown', (ev) => { if (mail && ev.key === 'Escape') mailClose(); });
 
+/* ===================== Жабки: план на день и отчёты в WhatsApp ===================== */
+/* У каждого свой список Жабок (Настройки, или владелец в админке) — по строке на Жабку,
+   например «Bosch, Warszawa, Jutrzenki 105, ZG356-1». Вечером отмечаешь, какие Жабки в этот день.
+   По каждой — один отчёт: «… ZG356-1 przed/po» и до 4 фото (оба состояния автомата) → «Поделиться» → WhatsApp.
+   В плане дня a = отчёт отправлен (b не используется — осталось от варианта с двумя отчётами).
+   Количество Жабок за день по-прежнему вводится вручную (кнопки −/+ выше). */
+const ZMAX_PHOTOS = 4;
+const zText = (line) => `${line} przed/po`;
+const zlist = () => (S.settings.zlist || []).filter(Boolean);
+let zpick = false; // открыт выбор Жабок на день
+let zrep = null;   // открытое окно отчёта: { day, t, photos: [{ file, url }] }
+
+function zabkiCard(d) {
+  const plan = entry(d).z || [], list = zlist();
+  const done = plan.filter((i) => i.a).length;
+  let body;
+  if (zpick) {
+    const items = [...new Set([...list, ...plan.map((i) => i.t)])];
+    body = items.length
+      ? `<p class="muted small">${t('Отметь Жабки на этот день', 'Zaznacz Żabki na ten dzień')}</p>
+        <div class="zpick">${items.map((s) => {
+          const on = plan.some((i) => i.t === s);
+          return `<button class="zp ${on ? 'on' : ''}" data-act="z-toggle" data-t="${esc(s)}">${ic(on ? 'check' : 'plus', 16)}<span>${esc(s)}</span></button>`;
+        }).join('')}</div>
+        <button class="btn primary" data-act="z-pick-done">${t('Готово', 'Gotowe')}</button>`
+      : `<p class="muted">${t('Список Жабок пуст — добавь свои Жабки в Настройках (по одной в строке).', 'Lista Żabek jest pusta — dodaj swoje Żabki w Ustawieniach (jedna w linii).')}</p>
+        <button class="btn tonal" data-act="z-pick-done">${t('Закрыть', 'Zamknij')}</button>`;
+  } else if (!plan.length) {
+    body = `<p class="muted small">${list.length
+      ? t(`Жабок в твоём списке: ${list.length}. Выбери, какие будут в этот день.`, `Żabek na Twojej liście: ${list.length}. Wybierz, które będą w tym dniu.`)
+      : t('Добавь свои Жабки в Настройках — потом здесь выбираешь, какие в этот день, и отправляешь отчёты с фото.', 'Dodaj swoje Żabki w Ustawieniach — potem tu wybierasz, które w tym dniu, i wysyłasz raporty ze zdjęciami.')}</p>
+      <button class="btn tonal" data-act="z-pick">${ic('check', 18)} ${t('Выбрать Жабки на этот день', 'Wybierz Żabki na ten dzień')}</button>`;
+  } else {
+    body = `<div class="zlist">${plan.map((i, n) => `<div class="zrow">
+        <div class="zt">${esc(i.t)}</div>
+        <button class="zb ${i.a ? 'done' : ''}" data-act="z-rep" data-n="${n}">${ic(i.a ? 'check' : 'camera', 16)} ${i.a ? t('Отправлено', 'Wysłano') : 'Raport przed/po'}</button>
+      </div>`).join('')}</div>
+      <button class="link" data-act="z-pick">${t('Изменить выбор', 'Zmień wybór')}</button>`;
+  }
+  return card('store', t('Отчёты Жабок', 'Raporty Żabek'), plan.length ? `<span class="hint">${done}/${plan.length} ✓</span>` : '', body);
+}
+
+/** Отметить отчёт по Жабке отправленным (или снять отметку). */
+function zMark(day, text, on) {
+  update(day, (x) => { x.z = (x.z || []).map((i) => (i.t === text ? { ...i, a: on } : i)); });
+}
+
+function renderZrep() {
+  let root = document.getElementById('zrep-root');
+  if (!root) { root = document.createElement('div'); root.id = 'zrep-root'; document.body.appendChild(root); }
+  if (!zrep) { root.innerHTML = ''; return; }
+  const item = (entry(zrep.day).z || []).find((i) => i.t === zrep.t);
+  const sent = item && item.a;
+  root.innerHTML = `<div class="sheet-bg" data-zrep="bg"><div class="sheet mail-sheet" role="dialog" aria-modal="true">
+    <div class="row-between"><h2>Raport przed/po</h2>
+      <button class="round" data-zrep="close" aria-label="${t('Закрыть', 'Zamknij')}">${ic('x', 20)}</button></div>
+    <label class="lbl">${t('Текст в WhatsApp', 'Tekst do WhatsApp')}</label>
+    <div class="ztext">${esc(zText(zrep.t))}</div>
+    <label class="lbl">${t('Фото «до» и «после»', 'Zdjęcia „przed” i „po”')} · ${zrep.photos.length} / ${ZMAX_PHOTOS}</label>
+    <div class="mail-photos">
+      ${zrep.photos.map((p, i) => `<div class="ph"><img src="${p.url}" alt=""><button data-zrep-del="${i}" aria-label="${t('Убрать', 'Usuń')}">${ic('x', 14)}</button></div>`).join('')}
+      ${zrep.photos.length < ZMAX_PHOTOS ? `<label class="ph add">${ic('camera', 22)}<span>${t('Снять / выбрать', 'Zrób / wybierz')}</span><input type="file" accept="image/*" multiple hidden data-zrep-files></label>` : ''}
+    </div>
+    <button class="btn primary" data-zrep="send">${ic('send', 18)} ${t('Отправить в WhatsApp', 'Wyślij do WhatsApp')}</button>
+    <p class="muted small">${t('Откроется «Поделиться» — выбери WhatsApp и группу. Текст тоже скопирован: если WhatsApp его не подставил, вставь.',
+      'Otworzy się „Udostępnij” — wybierz WhatsApp i grupę. Tekst jest też skopiowany: jeśli WhatsApp go nie wstawił, wklej.')}</p>
+    ${sent ? `<button class="link" data-zrep="unmark">${t('Снять отметку «отправлено»', 'Usuń oznaczenie „wysłane”')}</button>` : ''}
+  </div></div>`;
+}
+
+function zrepClose() {
+  if (zrep) zrep.photos.forEach((p) => URL.revokeObjectURL(p.url));
+  zrep = null;
+  renderZrep();
+}
+
+async function zrepSend(btn) {
+  const text = zText(zrep.t);
+  const files = zrep.photos.map((p) => p.file);
+  const { day, t: zt } = zrep;
+  btn.disabled = true;
+  await copyText(text);
+  if (files.length && navigator.canShare && navigator.canShare({ files })) {
+    try {
+      await navigator.share({ files, text });
+    } catch (e) {
+      btn.disabled = false;
+      if (!(e && e.name === 'AbortError')) toast(t('Не получилось открыть «Поделиться»', 'Nie udało się otworzyć „Udostępnij”'));
+      return;
+    }
+  } else if (files.length) {
+    // Компьютер: фото через «Поделиться» не отправить — открываем WhatsApp с текстом, фото добавить вручную
+    openWhatsApp(text);
+    toast(t('Фото добавь в WhatsApp вручную', 'Zdjęcia dodaj w WhatsApp ręcznie'));
+  } else {
+    openWhatsApp(text);
+  }
+  zMark(day, zt, true);
+  zrepClose();
+  if (ui.tab === 0 && ui.day === day) render();
+}
+
+document.addEventListener('click', (ev) => {
+  if (!zrep) return;
+  const el = ev.target;
+  const b = el.closest('[data-zrep]');
+  if (b && (b.dataset.zrep !== 'bg' || el === b)) {
+    ev.preventDefault();
+    if (b.dataset.zrep === 'close' || b.dataset.zrep === 'bg') zrepClose();
+    if (b.dataset.zrep === 'send') zrepSend(b);
+    if (b.dataset.zrep === 'unmark') { zMark(zrep.day, zrep.t, false); zrepClose(); render(); }
+    return;
+  }
+  const del = el.closest('[data-zrep-del]');
+  if (del) { const [p] = zrep.photos.splice(Number(del.dataset.zrepDel), 1); if (p) URL.revokeObjectURL(p.url); renderZrep(); }
+});
+document.addEventListener('change', async (ev) => {
+  if (!zrep || ev.target.dataset.zrepFiles === undefined || !ev.target.files || !ev.target.files.length) return;
+  for (const f of [...ev.target.files].slice(0, ZMAX_PHOTOS - zrep.photos.length)) {
+    const file = await shrinkPhoto(f, zrep.photos.length + 1);
+    zrep.photos.push({ file, url: URL.createObjectURL(file) });
+  }
+  renderZrep();
+});
+document.addEventListener('keydown', (ev) => { if (zrep && ev.key === 'Escape') zrepClose(); });
+
 /* ===================== Отчёт ===================== */
 function buildReport(p) {
   const pl = S.report.polish, lang = pl ? 'pl' : 'ru';
@@ -569,11 +697,11 @@ async function syncNow(force) {
   const days = {};
   for (const k of keys) {
     const x = S.entries[k];
-    if (x) days[k] = { p: x.points || 0, m: x.machines || 0, s: x.start ?? null, e: x.end ?? null, n: x.note || '', u: x.u || 1 };
+    if (x) days[k] = { p: x.points || 0, m: x.machines || 0, s: x.start ?? null, e: x.end ?? null, n: x.note || '', z: x.z || [], u: x.u || 1 };
     else if (z.deleted[k]) days[k] = { del: 1, u: z.deleted[k] };
   }
   const sendMeta = all || z.metaDirty;
-  const meta = sendMeta ? { rates: S.rates, header: S.settings.header || '', zabka: !!S.settings.zabka, u: z.metaU || 1 } : null;
+  const meta = sendMeta ? { rates: S.rates, header: S.settings.header || '', zabka: !!S.settings.zabka, zlist: S.settings.zlist || [], u: z.metaU || 1 } : null;
   const paid = {};
   for (const k of all ? Object.keys(S.paid) : Object.keys(z.paidDirty)) if (S.paid[k]) paid[k] = S.paid[k];
   // Снимаем отметку «не отправлено» заранее: если за время запроса день снова изменят, отметка встанет снова
@@ -597,7 +725,7 @@ async function syncNow(force) {
         if (loc) { delete S.entries[k]; changedUi = true; }
         z.deleted[k] = d.u;
       } else {
-        const nx = { points: d.p || 0, machines: d.m || 0, start: d.s ?? null, end: d.e ?? null, note: d.n || '', u: d.u };
+        const nx = { points: d.p || 0, machines: d.m || 0, start: d.s ?? null, end: d.e ?? null, note: d.n || '', z: d.z || (loc && loc.z) || [], u: d.u };
         if (!loc || !sameEntry(loc, nx)) changedUi = true;
         S.entries[k] = nx;
         delete z.deleted[k];
@@ -613,6 +741,9 @@ async function syncNow(force) {
       }
       if (typeof r.meta.zabka === 'boolean' && r.meta.zabka !== !!S.settings.zabka) {
         S.settings.zabka = r.meta.zabka; changedUi = true;
+      }
+      if (Array.isArray(r.meta.zlist) && JSON.stringify(r.meta.zlist) !== JSON.stringify(S.settings.zlist || [])) {
+        S.settings.zlist = r.meta.zlist; changedUi = true;
       }
       z.metaU = r.meta.u;
     }
@@ -672,6 +803,7 @@ async function switchData(code) {
   S.paid = {};
   S.settings.header = '';
   S.settings.zabka = false;
+  S.settings.zlist = [];
   S.sync = { ...JSON.parse(JSON.stringify(DEFAULTS.sync)), dataCode: code };
   syncedOnce = false;
   save();
@@ -690,6 +822,7 @@ async function logout() {
   S.paid = {};
   S.settings.header = '';
   S.settings.zabka = false;
+  S.settings.zlist = [];
   S.sync = JSON.parse(JSON.stringify(DEFAULTS.sync));
   S.auth = { ...S.auth, ok: false, code: '', name: '', owner: false, expires: null, reason: 'logged_out' };
   syncedOnce = false;
@@ -848,6 +981,8 @@ function renderDay() {
         <input class="num" data-field="machines" inputmode="numeric" pattern="[0-9]*" placeholder="0" autocomplete="off" value="${x.machines || ''}" aria-label="${t('Автоматы', 'Automaty')}">
         <button class="step" data-act="m-plus" aria-label="${t('Больше', 'Więcej')}">${ic('plus', 22)}</button>
       </div>`) : ''}
+
+    ${Z() ? zabkiCard(d) : ''}
 
     ${card('clock', t('Часы работы', 'Godziny pracy'), `<span id="hours-pill">${hoursPill(x)}</span>`,
       `<div class="times">${timeTile('start', t('Начало', 'Początek'), x.start)}${timeTile('end', t('Конец', 'Koniec'), x.end)}</div>
@@ -1092,7 +1227,11 @@ function renderSettings() {
     ${card('store', t('Автоматы Жабки', 'Automaty Żabki'),
       `<label class="switch"><input type="checkbox" data-check="zabka" ${st.zabka ? 'checked' : ''} aria-label="${t('Автоматы Жабки', 'Automaty Żabki')}"><span></span></label>`,
       `<p class="muted">${t('Включи, если делаешь Жабки. Выключено — Жабок нет на экране «День», в календаре, итогах и отчёте, считаются только точки. Уже записанные Жабки не удаляются.',
-        'Włącz, jeśli robisz Żabki. Wyłączone — Żabek nie ma na ekranie «Dzień», w kalendarzu, podsumowaniu i raporcie, liczą się tylko punkty. Zapisane Żabki nie są usuwane.')}</p>`)}
+        'Włącz, jeśli robisz Żabki. Wyłączone — Żabek nie ma na ekranie «Dzień», w kalendarzu, podsumowaniu i raporcie, liczą się tylko punkty. Zapisane Żabki nie są usuwane.')}</p>
+       ${st.zabka ? `<label class="lbl">${t('Мои Жабки — по одной в строке', 'Moje Żabki — jedna w linii')}</label>
+       <textarea class="field" data-field="zlist" rows="6" placeholder="Bosch, Warszawa, Jutrzenki 105, ZG356-1">${esc(zlist().join('\n'))}</textarea>
+       <p class="muted small">${t('Строка целиком уходит в WhatsApp, в конце добавляется «przed/po». Список меняется раз в неделю — его может поправить и владелец в админке.',
+         'Cała linia idzie do WhatsApp, na końcu dochodzi „przed/po”. Lista zmienia się raz w tygodniu — może ją poprawić też właściciel w panelu.')}</p>` : ''}`)}
     ${card('money', t('Ставки', 'Stawki'), '',
       `<label class="lbl">${t('За 1 точку, zł', 'Za 1 punkt, zł')}</label>
        <input class="field" data-field="rate-point" inputmode="decimal" value="${rate(S.rates.point)}">
@@ -1375,6 +1514,25 @@ const actions = {
   'm-minus'() { update(ui.day, (x) => { x.machines = Math.max(0, x.machines - 1); }); syncNum('machines'); refreshDay(); },
   'm-plus'() { update(ui.day, (x) => { x.machines += 1; }); syncNum('machines'); refreshDay(); },
   'mail-open'() { mailOpen(); },
+  'z-pick'() { zpick = true; render(); },
+  'z-pick-done'() { zpick = false; render(); },
+  'z-toggle'(el) {
+    const s = el.dataset.t, order = zlist();
+    update(ui.day, (x) => {
+      const plan = x.z || [];
+      const next = plan.some((i) => i.t === s) ? plan.filter((i) => i.t !== s) : [...plan, { t: s, a: false, b: false }];
+      // в порядке списка Жабок; то, чего в списке уже нет, — в конце
+      const pos = (i) => { const k = order.indexOf(i.t); return k < 0 ? 1e6 : k; };
+      x.z = next.sort((p, q) => pos(p) - pos(q));
+    });
+    render();
+  },
+  'z-rep'(el) {
+    const item = (entry(ui.day).z || [])[Number(el.dataset.n)];
+    if (!item) return;
+    zrep = { day: ui.day, t: item.t, photos: [] };
+    renderZrep();
+  },
   'wa-start'() { waStartEnd('start', 'Start'); },
   'wa-end'() { waStartEnd('end', 'Koniec'); },
   'wa-mini'() {
@@ -1466,6 +1624,7 @@ const fields = {
   points(el) { const v = el.value.replace(/\D/g, '').slice(0, 4); if (v !== el.value) el.value = v; update(ui.day, (x) => { x.points = Number(v) || 0; }); refreshDay(); },
   machines(el) { const v = el.value.replace(/\D/g, '').slice(0, 3); if (v !== el.value) el.value = v; update(ui.day, (x) => { x.machines = Number(v) || 0; }); refreshDay(); },
   header(el) { S.settings.header = el.value; metaChanged(); save(); },
+  zlist(el) { S.settings.zlist = el.value.split('\n').map((s) => s.trim()).filter(Boolean).slice(0, 60); metaChanged(); save(); },
   'rate-point'(el) { const v = parseFloat(el.value.replace(',', '.')); if (Number.isFinite(v) && v >= 0) { S.rates.point = v; metaChanged(); save(); } },
   'rate-machine'(el) { const v = parseFloat(el.value.replace(',', '.')); if (Number.isFinite(v) && v >= 0) { S.rates.machine = v; metaChanged(); save(); } },
   paid(el) {
