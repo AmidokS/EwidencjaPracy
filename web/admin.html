@@ -394,7 +394,6 @@
   const CHEV = '<svg class="chev" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="m6 9 6 6 6-6"/></svg>';
 
   function personHtml(it) {
-    const tries = it.attempts || [];
     const c = esc(it.code);
     const open = openCode === it.code;
     // Устройства, где сейчас введён код (у старых записей — один телефон без списка)
@@ -407,7 +406,6 @@
       .filter(Boolean).join(' · ');
     const flags = [
       isOld(it) ? '<span class="tag bad">Старая версия</span>' : '',
-      tries.length ? `<span class="tag bad">Чужой телефон ×${tries.length}</span>` : '',
       it.expires && !isExpired(it) && it.expires - Date.now() < 7 * DAY ? `<span class="tag wait">Срок до ${dateOnly(it.expires)}</span>` : '',
     ].filter(Boolean).join('');
     return `<div class="person${open ? ' open' : ''}" data-p="${c}">
@@ -434,7 +432,6 @@
           <dt>Срок</dt><dd>${it.expires ? `до ${dateOnly(it.expires)}` : 'без срока'}</dd>
           <dt>Создан</dt><dd>${when(it.created)}</dd>
           ${it.activated ? `<dt>Активирован</dt><dd>${when(it.activated)}</dd>` : ''}
-          ${tries.length ? `<dt class="warn">Чужой телефон</dt><dd class="warn">${tries.length} попыт. войти, последняя ${when(tries[0].at)}</dd>` : ''}
         </dl>
         </div>
         <div class="acts">
@@ -471,7 +468,6 @@
   const PROBLEMS = [
     ['old', 'Старая версия', isOld],
     ['idle', 'Не заходили 7+ дней', (it) => !isClosed(it) && !!it.device && (!it.lastSeen || Date.now() - it.lastSeen > WEEK)],
-    ['tries', 'Вход с чужого телефона', (it) => (it.attempts || []).length > 0],
   ];
   const ONLINE_F = [['online', 'в сети', (it) => isOnline(it)]];
   const filterFn = () => ([...TILES, ...PROBLEMS, ...ONLINE_F].find((f) => f[0] === filter) || TILES[0])[2];
