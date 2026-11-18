@@ -2,7 +2,7 @@
 /* Учёт работы — PWA. Создатель: Artur Alimhulov.
    Все данные хранятся только на телефоне (localStorage). */
 
-const VERSION = '2.6';
+const VERSION = '2.7';
 const STORE_KEY = 'uchet-raboty-v1';
 
 /* ==== calc:begin ====
@@ -815,11 +815,7 @@ function renderCalendar() {
     </button>`;
   }
   const halves = [{ start: first, end: dayOf(y, m, 15) }, { start: dayOf(y, m, 16), end: dayOf(y, m, n) }];
-  const halfCards = halves.map((p) => {
-    const s = summarize(p);
-    return card('calendar', periodTitle(p), `<b style="color:var(--primary);white-space:nowrap">${money(sumMoney(s))}</b>`,
-      `<p class="muted">${s.points} ${t('точек', 'punktów')}${Z() ? ` · ${s.machines} ${t('автоматов', 'automatów')}` : ''} · ${hours(s.minutes)}</p>`);
-  }).join('');
+  const halfCards = halves.map(payCard).join('');
 
   return `
     ${navHead(monthTitle(mi), t('Нажми на день, чтобы изменить', 'Dotknij dnia, aby edytować'))}
@@ -847,16 +843,6 @@ function renderReport() {
     </div>`;
   }
   const monthMachines = isSecondHalf(p) ? summarize({ start: monthFirst(monthIndexOf(p.start)), end: p.end }).machines : null;
-  const endDay = daysInMonth(ymd(p.start).y, ymd(p.start).m);
-
-  const payBody = `
-    <div class="money-row"><span>${t('Точки', 'Punkty')} ${pay.points} × ${rate(S.rates.point)}</span><span>${money(pay.pointsMoney)}</span></div>
-    ${Z() && pay.paidNow ? `<div class="money-row"><span>${t('Жабка за месяц', 'Żabka za miesiąc')} ${pay.machines} × ${rate(S.rates.machine)}</span><span>${money(pay.machinesMoney)}</span></div>` : ''}
-    <div class="total"><span style="font-weight:650">${t('Всего', 'Razem')}</span><b>${money(pay.total)}</b></div>
-    ${Z() && !pay.paidNow ? `<p class="muted small">${t(`Жабка оплачивается раз в месяц — войдёт в выплату за 16–${endDay}. Сейчас: ${pay.machines} авт. = ${money(pay.machinesMoney)}`,
-      `Żabka jest płatna raz w miesiącu — wejdzie do wypłaty za 16–${endDay}. Teraz: ${pay.machines} aut. = ${money(pay.machinesMoney)}`)}</p>` : ''}
-    ${s.minutes > 0 ? `<p class="muted small">${t('Заработано в час', 'Zarobek na godzinę')}: ≈ ${money(sumMoney(s) / (s.minutes / 60))}</p>` : ''}
-    ${paidBlock(p, pay.total)}`;
 
   const chip = (act, k, label, on) => `<button class="chip ${on ? 'on' : ''}" data-act="${act}" data-k="${k}">${on ? ic('check', 14) : ''}${label}</button>`;
   const repBody = `
@@ -905,7 +891,6 @@ function renderReport() {
       ${tile(t('Часов', 'Godzin'), hoursShort(s.minutes))}
       ${tile(t('Рабочих дней', 'Dni pracy'), s.workDays)}
     </div>
-    ${card('money', t('К оплате', 'Do wypłaty'), '', payBody)}
     ${card('doc', t('Отчёт', 'Raport'), '', repBody)}
     </div>
     <div class="col">${card('list', t('По дням', 'Dzień po dniu'), '', daysBody)}</div>`;
@@ -923,12 +908,29 @@ function paidDiffHtml(expected, paid) {
 }
 
 function paidBlock(p, expected) {
+  const k = iso(p.start);
   return `<div class="paid">
-    <label class="lbl" for="paid-input">${t('Пришло на счёт, zł', 'Wpłynęło na konto, zł')}</label>
-    <input class="field" id="paid-input" data-field="paid" data-k="${iso(p.start)}" inputmode="decimal" autocomplete="off"
+    <label class="lbl" for="paid-input-${k}">${t('Пришло на счёт, zł', 'Wpłynęło na konto, zł')}</label>
+    <input class="field" id="paid-input-${k}" data-field="paid" data-k="${k}" inputmode="decimal" autocomplete="off"
       placeholder="${t('сумма из банка', 'kwota z banku')}" value="${paidInputValue(paidOf(p))}">
-    <div id="paid-diff">${paidDiffHtml(expected, paidOf(p))}</div>
+    <div id="paid-diff-${k}">${paidDiffHtml(expected, paidOf(p))}</div>
   </div>`;
+}
+
+/** Карточка «К оплате» за период выплаты (в календаре — по одной на каждую половину месяца). */
+function payCard(p) {
+  const s = summarize(p), pay = payout(p);
+  const endDay = daysInMonth(ymd(p.start).y, ymd(p.start).m);
+  const body = `
+    <p class="muted">${s.points} ${t('точек', 'punktów')}${Z() ? ` · ${s.machines} ${t('автоматов', 'automatów')}` : ''} · ${hours(s.minutes)}</p>
+    <div class="money-row"><span>${t('Точки', 'Punkty')} ${pay.points} × ${rate(S.rates.point)}</span><span>${money(pay.pointsMoney)}</span></div>
+    ${Z() && pay.paidNow ? `<div class="money-row"><span>${t('Жабка за месяц', 'Żabka za miesiąc')} ${pay.machines} × ${rate(S.rates.machine)}</span><span>${money(pay.machinesMoney)}</span></div>` : ''}
+    <div class="total"><span style="font-weight:650">${t('Всего', 'Razem')}</span><b>${money(pay.total)}</b></div>
+    ${Z() && !pay.paidNow ? `<p class="muted small">${t(`Жабка оплачивается раз в месяц — войдёт в выплату за 16–${endDay}. Сейчас: ${pay.machines} авт. = ${money(pay.machinesMoney)}`,
+      `Żabka jest płatna raz w miesiącu — wejdzie do wypłaty za 16–${endDay}. Teraz: ${pay.machines} aut. = ${money(pay.machinesMoney)}`)}</p>` : ''}
+    ${s.minutes > 0 ? `<p class="muted small">${t('Заработано в час', 'Zarobek na godzinę')}: ≈ ${money(sumMoney(s) / (s.minutes / 60))}</p>` : ''}
+    ${paidBlock(p, pay.total)}`;
+  return card('money', `${t('К оплате', 'Do wypłaty')} · ${periodTitle(p)}`, '', body);
 }
 
 /* ===================== Экран «Итоги» ===================== */
@@ -1368,9 +1370,10 @@ const fields = {
     const raw = el.value.replace(/[\s  ]/g, '').replace(',', '.');
     const v = raw === '' ? null : Number(raw);
     if (v != null && !(Number.isFinite(v) && v >= 0)) return; // ввели не число — ничего не меняем
-    setPaid(el.dataset.k, v == null ? null : Math.round(v * 100) / 100);
-    const p = periodFromIndex(ui.period);
-    const d = document.getElementById('paid-diff');
+    const k = el.dataset.k;
+    setPaid(k, v == null ? null : Math.round(v * 100) / 100);
+    const p = payPeriod(fromIso(k));
+    const d = document.getElementById(`paid-diff-${k}`);
     if (d) d.innerHTML = paidDiffHtml(payout(p).total, paidOf(p));
   },
 };

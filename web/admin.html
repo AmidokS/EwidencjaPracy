@@ -77,6 +77,16 @@
     .err { color: var(--error); font-weight: 600; font-size: 14px; margin: 0; min-height: 18px; }
     .check { display: flex; align-items: flex-start; gap: 10px; font-size: 15px; }
     .check input { width: 20px; height: 20px; accent-color: var(--primary); flex: none; margin-top: 1px; }
+    .manual summary { cursor: pointer; font-size: 14px; color: var(--text2); }
+    .manual[open] > * + * { margin-top: 10px; }
+    .manual .btn { width: 100%; }
+
+    /* Кто на какой версии */
+    .vlist { display: flex; flex-direction: column; gap: 8px; }
+    .vrow { background: var(--card-hi); border-radius: 12px; padding: 8px 12px; }
+    .vhead { display: flex; align-items: center; gap: 8px; font-size: 15px; }
+    .vhead .vn { margin-left: auto; font: 700 17px var(--rounded); }
+    .vwho { font-size: 13px; color: var(--text2); margin-top: 2px; overflow-wrap: anywhere; }
 
     /* Окно «Новый код» */
     .sheet .x { position: absolute; top: 14px; right: 14px; border: 0; background: var(--card-hi); width: 36px; height: 36px; border-radius: 50%; font-size: 18px; color: var(--text2); }
@@ -274,10 +284,15 @@
   }
 
   async function load() {
-    const r = await call('/admin/list');
+    const [r] = await Promise.all([call('/admin/list'), loadSite()]);
     items = r.items || [];
     cfg = r.cfg || null;
     render();
+    // Проверка файла на сайте — в фоне, потом перерисуем карточку
+    if (site && site.apkLive === null && site.apk && site.apk.code > ((cfg && cfg.apk && cfg.apk.code) || 0)) {
+      site.apkLive = 'checking';
+      verifyApk().then(() => { if (tab === 'settings') render(); });
+    }
   }
 
   const isExpired = (it) => !!it.expires && Date.now() > it.expires;
@@ -410,16 +425,26 @@
 
       <section class="card">
         <h3>Обновление Android (APK)</h3>
-        ${c.apk && c.apk.name ? `<span class="now">Сейчас: версия ${esc(c.apk.name)} (номер ${c.apk.code})${forced ? ' · обязательное' : ''}</span>` : ''}
-        <p class="muted small">Новую версию выкладывает Claude и сам меняет эти поля. Вручную — только если нужно что-то поправить.</p>
-        <div class="two">
-          <div><label class="lbl">Версия</label><input class="field" id="apk-name" placeholder="1.8" value="${esc(c.apk.name || '')}"></div>
-          <div><label class="lbl">Номер версии</label><input class="field" id="apk-code" inputmode="numeric" placeholder="9" value="${c.apk.code || ''}"></div>
-        </div>
-        <label class="lbl">Ссылка на файл</label>
-        <input class="field" id="apk-url" value="${esc(c.apk.url || APK_LINK)}">
-        <label class="check"><input type="checkbox" id="apk-force" ${forced ? 'checked' : ''}> Обязательное обновление — старая версия не откроется, пока не обновят</label>
-        <button class="btn primary" data-s="apk-save">Сохранить</button>
+        ${c.apk && c.apk.name ? `<span class="now">У людей предлагается: версия ${esc(c.apk.name)} (номер ${c.apk.code})${forced ? ' · обязательное' : ''}</span>` : ''}
+        ${apkSiteHtml(c)}
+        <details class="manual">
+          <summary>Вписать вручную</summary>
+          <p class="muted small">Нужно, только если кнопка выше не подходит.</p>
+          <div class="two">
+            <div><label class="lbl">Версия</label><input class="field" id="apk-name" placeholder="1.8" value="${esc(c.apk.name || '')}"></div>
+            <div><label class="lbl">Номер версии</label><input class="field" id="apk-code" inputmode="numeric" placeholder="9" value="${c.apk.code || ''}"></div>
+          </div>
+          <label class="lbl">Ссылка на файл</label>
+          <input class="field" id="apk-url" value="${esc(c.apk.url || APK_LINK)}">
+          <label class="check"><input type="checkbox" id="apk-force" ${forced ? 'checked' : ''}> Обязательное обновление — старая версия не откроется, пока не обновят</label>
+          <button class="btn primary" data-s="apk-save">Сохранить</button>
+        </details>
+      </section>
+
+      <section class="card">
+        <h3>Кто на какой версии</h3>
+        <p class="muted small">По последнему входу с интернетом. Отключённые и с истёкшим сроком не считаются.</p>
+        ${versionsHtml()}
       </section>
 
       <section class="card">
@@ -447,8 +472,98 @@
           <dt>Сменить код</dt><dd>Старый код сразу перестаёт работать, человек получает новый.</dd>
           <dt>Отвязать телефон</dt><dd>Если человек сменил телефон: он вводит тот же код на новом. Код работает только на одном телефоне — кроме твоего кода владельца, он работает везде.</dd>
           <dt>Удалить</dt><dd>Код исчезает из списка навсегда.</dd>
+          <dt>Сообщить всем об обновлении</dt><dd>Появляется, когда на сайт выложен новый APK. У людей с APK при запуске появится кнопка «Обновить».</dd>
         </dl>
       </section>`;
+  }
+
+  /* ---------- Что лежит на сайте (version.json кладёт deploy.ps1 вместе с APK) ---------- */
+  let site = null; // { apk: { code, name, size, sha256 }, web, at, apkLive: true | false | null }
+  async function loadSite() {
+    try {
+      const r = await fetch(`version.json?x=${Date.now()}`, { cache: 'no-store' });
+      if (!r.ok) throw new Error('no version.json');
+      site = { ...(await r.json()), apkLive: null };
+    } catch (e) { site = null; }
+  }
+
+  /**
+   * Сайт уже отдаёт именно этот APK? После выкладки GitHub обновляет файлы не сразу —
+   * если сообщить об обновлении раньше, люди скачают старую версию и застрянут на экране «Обновить».
+   * Скачиваем файл (~1,5 МБ) и сравниваем SHA-256. Только когда есть что предлагать.
+   */
+  async function verifyApk() {
+    const a = site && site.apk;
+    if (!a || !a.sha256 || !(a.code > ((cfg && cfg.apk && cfg.apk.code) || 0))) return;
+    try {
+      const r = await fetch(`${APK_LINK}?x=${Date.now()}`, { cache: 'no-store' });
+      if (!r.ok) throw new Error('apk');
+      const hash = await crypto.subtle.digest('SHA-256', await r.arrayBuffer());
+      const hex = [...new Uint8Array(hash)].map((b) => b.toString(16).padStart(2, '0')).join('');
+      site.apkLive = hex === a.sha256;
+    } catch (e) { site.apkLive = null; }
+  }
+
+  function apkSiteHtml(c) {
+    const s = site && site.apk;
+    if (!s) return '<p class="muted small">Не удалось узнать, какой APK лежит на сайте (файл version.json появится после следующей выкладки). Пока можно вписать версию вручную ниже.</p>';
+    const cur = (c.apk && c.apk.code) || 0;
+    let h = `<p class="small" style="margin:0">На сайте лежит: <b>APK ${esc(s.name)}</b> (номер ${s.code})${site.at ? `, выложен ${when(Date.parse(site.at))}` : ''}</p>`;
+    if (s.code > cur) {
+      if (site.apkLive === 'checking') {
+        h += '<p class="muted small" style="margin:0">Проверяю, что сайт уже отдаёт этот файл…</p>';
+      } else if (site.apkLive === false) {
+        h += '<p class="warn small" style="margin:0">Файл на сайте ещё обновляется — подожди пару минут и обнови страницу. Сейчас сообщать рано: люди скачали бы старую версию.</p>';
+      } else {
+        if (site.apkLive !== true) h += '<p class="muted small" style="margin:0">Не получилось проверить файл на сайте — убедись, что прошло хотя бы несколько минут после выкладки.</p>';
+        h += `<label class="check"><input type="checkbox" id="apk-force-new"> Обязательное — старая версия не откроется, пока не обновят</label>
+          <button class="btn primary" data-s="apk-apply">Сообщить всем: обновление до ${esc(s.name)}</button>
+          <p class="muted small" style="margin:0">У всех с APK при следующем запуске появится кнопка «Обновить».</p>`;
+      }
+    } else if (s.code === cur) {
+      h += '<p class="small" style="margin:0;color:var(--primary);font-weight:600">✓ Все получают последнюю версию</p>';
+    } else {
+      h += `<p class="warn small" style="margin:0">Предлагается номер ${cur}, а на сайте только ${s.code} — люди увидят «Обновить», но скачают старый файл.</p>
+        <button class="btn tonal" data-s="apk-apply">Вернуть как на сайте (${esc(s.name)})</button>`;
+    }
+    return h;
+  }
+
+  /* ---------- Кто на какой версии ---------- */
+  const VKIND = { android: 'APK', ios: 'iPhone', 'web-android': 'Android, браузер', web: 'Браузер' };
+  function versionsHtml() {
+    // Устройства людей с открытым доступом: у владельца — каждое его устройство отдельно
+    const groups = new Map();
+    let none = 0;
+    for (const it of items) {
+      if (isClosed(it)) continue;
+      const devs = it.owner && (it.devices || []).length ? it.devices
+        : it.device && it.platform ? [{ platform: it.platform, version: it.version }] : [];
+      if (!devs.length) { none++; continue; }
+      for (const d of devs) {
+        const key = `${d.platform || '?'}|${d.version || '?'}`;
+        if (!groups.has(key)) groups.set(key, { platform: d.platform, version: d.version, names: [] });
+        groups.get(key).names.push(it.name);
+      }
+    }
+    if (!groups.size) return '<p class="muted">Пока никто не входил.</p>';
+    const latestApk = (site && site.apk && site.apk.name) || (cfg && cfg.apk && cfg.apk.name) || '';
+    const latestWeb = (site && site.web) || '';
+    const order = { android: 0, ios: 1, 'web-android': 2, web: 3 };
+    const rows = [...groups.values()].sort((a, b) =>
+      ((order[a.platform] ?? 9) - (order[b.platform] ?? 9)) || (verNum(b.version) - verNum(a.version)));
+    const html = rows.map((g) => {
+      const latest = g.platform === 'android' ? latestApk : latestWeb;
+      const tag = !latest || !g.version ? ''
+        : verNum(g.version) >= verNum(latest) ? '<span class="tag ok">последняя</span>'
+        : '<span class="tag bad">старая</span>';
+      const names = [...new Set(g.names)].sort((a, b) => a.localeCompare(b, 'ru'));
+      return `<div class="vrow">
+        <div class="vhead"><b>${esc(VKIND[g.platform] || g.platform || '?')} ${esc(g.version || '')}</b>${tag}<span class="vn">${g.names.length}</span></div>
+        <div class="vwho">${names.map(esc).join(', ')}</div>
+      </div>`;
+    }).join('');
+    return `<div class="vlist">${html}</div>${none ? `<p class="muted small" style="margin:0">Ещё не входили: ${none}</p>` : ''}`;
   }
 
   function sheetHtml() {
@@ -637,6 +752,17 @@
           const force = document.getElementById('apk-force').checked;
           const keepMin = cfg && cfg.minApk && cfg.minApk < code ? cfg.minApk : 0;
           return saveCfg({ apk: { code, name: v('apk-name'), url: v('apk-url') }, minApk: force ? code : keepMin });
+        }
+        case 'apk-apply': {
+          // Версию берём из version.json — то, что реально лежит на сайте
+          const a = site && site.apk;
+          if (!a || !a.code) { toast('Не знаю, какой APK на сайте'); return; }
+          const box = document.getElementById('apk-force-new');
+          const force = !!(box && box.checked);
+          // Обязательная версия не может быть выше той, что лежит на сайте, — иначе приложение не откроется ни у кого
+          const keepMin = cfg && cfg.minApk && cfg.minApk <= a.code ? cfg.minApk : 0;
+          return saveCfg({ apk: { code: a.code, name: a.name, url: APK_LINK }, minApk: force ? a.code : keepMin },
+            `Готово: всем предлагается ${a.name}`);
         }
         case 'offline-save': return saveCfg({ offlineDays: v('offline') });
         case 'mail-save': {

@@ -1,6 +1,6 @@
 // Офлайн-работа: все файлы приложения хранятся в кеше телефона.
 // При каждом запуске кеш тихо обновляется из сети, если она есть.
-const CACHE = 'uchet-2.6';
+const CACHE = 'uchet-2.7';
 const FILES = [
   './',
   './index.html',
@@ -33,7 +33,7 @@ self.addEventListener('fetch', (e) => {
   // Страница управления и APK всегда берутся из сети: иначе можно увидеть старую админку
   // или скачать из кеша старую версию APK вместо новой
   const path = new URL(e.request.url).pathname;
-  if (path.endsWith('/admin.html') || path.endsWith('.apk')) return;
+  if (path.endsWith('/admin.html') || path.endsWith('.apk') || path.endsWith('/version.json')) return;
   e.respondWith(
     caches.open(CACHE).then(async (cache) => {
       const cached = await cache.match(e.request, { ignoreSearch: true });
