@@ -236,6 +236,11 @@ button:disabled { opacity: .45; cursor: default; }
 .money-row span:last-child { font-weight: 600; }
 .total { display: flex; justify-content: space-between; align-items: center; border-top: 1px solid var(--outline-v); padding-top: 12px; }
 .total b { font: 650 24px var(--rounded); color: var(--primary); }
+/* Сверка выплаты */
+.paid { display: flex; flex-direction: column; gap: 6px; border-top: 1px solid var(--outline-v); padding-top: 12px; }
+.paid-ok, .paid-less, .paid-more { display: inline-flex; align-items: center; gap: 6px; font-weight: 650; font-size: 15px; }
+.paid-ok, .paid-more { color: var(--primary); }
+.paid-less { color: var(--error); }
 
 /* ---------- Графики ---------- */
 .bars { width: 100%; display: block; }

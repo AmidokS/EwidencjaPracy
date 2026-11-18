@@ -2,8 +2,12 @@
 /* Учёт работы — PWA. Создатель: Artur Alimhulov.
    Все данные хранятся только на телефоне (localStorage). */
 
-const VERSION = '2.5';
+const VERSION = '2.6';
 const STORE_KEY = 'uchet-raboty-v1';
+
+/* ==== calc:begin ====
+   Даты и деньги — без экрана и без S. Этот кусок целиком загружают тесты (tests/calc.test.js)
+   и сверяют с tests/payout-cases.json — те же примеры проверяет Android. Здесь не трогать DOM и S. */
 
 /* ===================== Дни ===================== */
 const DAY_MS = 86400000;
@@ -39,6 +43,40 @@ function monthPeriod(mi) {
 }
 function daysOf(p) { const a = []; for (let e = p.start; e <= p.end; e++) a.push(e); return a; }
 
+/* ===================== Деньги ===================== */
+/** Отработанные минуты; если конец раньше начала — смена через полночь. */
+const worked = (x) => { if (x.start == null || x.end == null) return 0; let d = x.end - x.start; if (d < 0) d += 1440; return d; };
+const isWorkDay = (x, zabka) => x.points > 0 || (zabka && x.machines > 0) || worked(x) > 0;
+
+/** Итоги за диапазон дней. zabka выключена — автоматы не считаются. */
+function summarizeIn(entries, p, zabka) {
+  const s = { points: 0, machines: 0, minutes: 0, workDays: 0 };
+  for (let e = p.start; e <= p.end; e++) {
+    const x = entries[iso(e)];
+    if (!x) continue;
+    s.points += x.points || 0; s.machines += zabka ? x.machines || 0 : 0; s.minutes += worked(x);
+    if (isWorkDay(x, zabka)) s.workDays++;
+  }
+  return s;
+}
+
+/* Точки платят каждые 2 недели, Жабку — раз в месяц (в выплате за 16–конец, за весь месяц) */
+function payoutIn(entries, p, rates, zabka) {
+  const s = summarizeIn(entries, p, zabka);
+  const second = isSecondHalf(p);
+  const machines = second ? summarizeIn(entries, { start: monthFirst(monthIndexOf(p.start)), end: p.end }, zabka).machines : s.machines;
+  const pointsMoney = s.points * rates.point;
+  const machinesMoney = machines * rates.machine;
+  return { points: s.points, pointsMoney, machines, machinesMoney, paidNow: second, total: pointsMoney + (second ? machinesMoney : 0) };
+}
+
+/** Сверка выплаты: сколько пришло по сравнению с расчётом (до копеек). */
+function reconcile(expected, paid) {
+  const diff = Math.round((paid - expected) * 100) / 100 || 0;
+  return { diff, status: diff === 0 ? 'ok' : diff < 0 ? 'less' : 'more' };
+}
+/* ==== calc:end ==== */
+
 /* ===================== Данные ===================== */
 const DEFAULTS = {
   entries: {},
@@ -53,7 +91,9 @@ const DEFAULTS = {
   reportHidden: 0,
   // Синхронизация между устройствами (только у владельца). since — метка сервера с прошлого раза,
   // dirty — дни, изменённые здесь и ещё не отправленные, deleted — когда день был очищен.
-  sync: { since: 0, dirty: {}, deleted: {}, metaU: 0, metaDirty: false, at: 0 },
+  sync: { since: 0, dirty: {}, deleted: {}, metaU: 0, metaDirty: false, at: 0, paidDirty: {} },
+  // Сверка выплаты: сколько реально пришло за период. Ключ — первый день периода, v: null — стёрто.
+  paid: {},
 };
 
 let S = load();
@@ -74,6 +114,8 @@ function load() {
     Object.assign(s.auth, raw.auth || {});
     Object.assign(s.cloud, raw.cloud || {});
     Object.assign(s.sync, raw.sync || {});
+    if (!s.sync.paidDirty) s.sync.paidDirty = {};
+    Object.assign(s.paid, raw.paid || {});
     s.installHidden = !!raw.installHidden;
     s.msgHidden = raw.msgHidden || 0;
     s.reportHidden = raw.reportHidden || 0;
@@ -89,11 +131,10 @@ function save() {
 
 const blank = () => ({ points: 0, machines: 0, start: null, end: null, note: '' });
 const entry = (e) => S.entries[iso(e)] || blank();
-const worked = (x) => { if (x.start == null || x.end == null) return 0; let d = x.end - x.start; if (d < 0) d += 1440; return d; };
 const isEmptyEntry = (x) => !x.points && !x.machines && x.start == null && x.end == null && !(x.note || '').trim();
 /** Включён ли раздел «Автоматы Жабки» (Настройки). Выключен — Жабки нигде не видны и не считаются. */
 const Z = () => !!S.settings.zabka;
-const isWork = (x) => x.points > 0 || (Z() && x.machines > 0) || worked(x) > 0;
+const isWork = (x) => isWorkDay(x, Z());
 const dayMoney = (x) => x.points * S.rates.point + (Z() ? x.machines * S.rates.machine : 0);
 
 const sameEntry = (a, b) => a.points === b.points && a.machines === b.machines && a.start === b.start && a.end === b.end && (a.note || '') === (b.note || '');
@@ -125,27 +166,19 @@ function metaChanged() {
   syncSoon();
 }
 
-function summarize(p) {
-  const s = { points: 0, machines: 0, minutes: 0, workDays: 0 };
-  for (let e = p.start; e <= p.end; e++) {
-    const x = S.entries[iso(e)];
-    if (!x) continue;
-    s.points += x.points; s.machines += Z() ? x.machines : 0; s.minutes += worked(x);
-    if (isWork(x)) s.workDays++;
-  }
-  return s;
+/** Записать, сколько пришло за период (null — стереть). У владельца уйдёт на другие устройства. */
+function setPaid(key, v) {
+  const cur = S.paid[key];
+  if ((cur ? cur.v : null) === v) return;
+  S.paid[key] = { v, u: Date.now() };
+  if (isOwner()) { S.sync.paidDirty[key] = 1; syncSoon(); }
+  save();
 }
-const sumMoney = (s) => s.points * S.rates.point + s.machines * S.rates.machine;
+const paidOf = (p) => { const x = S.paid[iso(p.start)]; return x && x.v != null ? x.v : null; };
 
-/* Точки платят каждые 2 недели, Жабку — раз в месяц (в выплате за 16–конец) */
-function payout(p) {
-  const s = summarize(p);
-  const second = isSecondHalf(p);
-  const machines = second ? summarize({ start: monthFirst(monthIndexOf(p.start)), end: p.end }).machines : s.machines;
-  const pointsMoney = s.points * S.rates.point;
-  const machinesMoney = machines * S.rates.machine;
-  return { points: s.points, pointsMoney, machines, machinesMoney, paidNow: second, total: pointsMoney + (second ? machinesMoney : 0) };
-}
+const summarize = (p) => summarizeIn(S.entries, p, Z());
+const sumMoney = (s) => s.points * S.rates.point + s.machines * S.rates.machine;
+const payout = (p) => payoutIn(S.entries, p, S.rates, Z());
 
 /* ===================== Язык и формат ===================== */
 const isPl = () => S.settings.lang === 'pl';
@@ -518,13 +551,17 @@ async function syncNow() {
   }
   const sendMeta = all || z.metaDirty;
   const meta = sendMeta ? { rates: S.rates, header: S.settings.header || '', u: z.metaU || 1 } : null;
+  const paid = {};
+  for (const k of all ? Object.keys(S.paid) : Object.keys(z.paidDirty)) if (S.paid[k]) paid[k] = S.paid[k];
   // Снимаем отметку «не отправлено» заранее: если за время запроса день снова изменят, отметка встанет снова
   const pending = Object.keys(z.dirty);
   z.dirty = {};
+  const pendingPaid = Object.keys(z.paidDirty);
+  z.paidDirty = {};
   const metaWas = z.metaDirty;
   z.metaDirty = false;
   try {
-    const r = await api('/sync', { code: S.auth.code, device: deviceId(), since: z.since || 0, days, meta });
+    const r = await api('/sync', { code: S.auth.code, device: deviceId(), since: z.since || 0, days, meta, paid });
     if (!r || !r.ok) throw new Error('sync');
     let changedUi = false;
     for (const [k, d] of Object.entries(r.days || {})) {
@@ -551,6 +588,13 @@ async function syncNow() {
       }
       z.metaU = r.meta.u;
     }
+    for (const [k, d] of Object.entries(r.paid || {})) {
+      const loc = S.paid[k];
+      if (loc && d.u < loc.u) continue; // здесь изменено позже — оставляем своё
+      const v = d.v == null ? null : Number(d.v);
+      if ((loc ? loc.v : null) !== v) changedUi = true;
+      S.paid[k] = { v, u: d.u };
+    }
     z.since = r.now;
     z.at = Date.now();
     syncedOnce = true;
@@ -563,6 +607,7 @@ async function syncNow() {
     return true;
   } catch (e) {
     for (const k of pending) z.dirty[k] = 1;
+    for (const k of pendingPaid) z.paidDirty[k] = 1;
     if (metaWas) z.metaDirty = true;
     save();
     return false;
@@ -810,7 +855,8 @@ function renderReport() {
     <div class="total"><span style="font-weight:650">${t('Всего', 'Razem')}</span><b>${money(pay.total)}</b></div>
     ${Z() && !pay.paidNow ? `<p class="muted small">${t(`Жабка оплачивается раз в месяц — войдёт в выплату за 16–${endDay}. Сейчас: ${pay.machines} авт. = ${money(pay.machinesMoney)}`,
       `Żabka jest płatna raz w miesiącu — wejdzie do wypłaty za 16–${endDay}. Teraz: ${pay.machines} aut. = ${money(pay.machinesMoney)}`)}</p>` : ''}
-    ${s.minutes > 0 ? `<p class="muted small">${t('Заработано в час', 'Zarobek na godzinę')}: ≈ ${money(sumMoney(s) / (s.minutes / 60))}</p>` : ''}`;
+    ${s.minutes > 0 ? `<p class="muted small">${t('Заработано в час', 'Zarobek na godzinę')}: ≈ ${money(sumMoney(s) / (s.minutes / 60))}</p>` : ''}
+    ${paidBlock(p, pay.total)}`;
 
   const chip = (act, k, label, on) => `<button class="chip ${on ? 'on' : ''}" data-act="${act}" data-k="${k}">${on ? ic('check', 14) : ''}${label}</button>`;
   const repBody = `
@@ -863,6 +909,26 @@ function renderReport() {
     ${card('doc', t('Отчёт', 'Raport'), '', repBody)}
     </div>
     <div class="col">${card('list', t('По дням', 'Dzień po dniu'), '', daysBody)}</div>`;
+}
+
+/* Сверка выплаты: человек вписывает, сколько пришло на счёт, — видно, не недоплатили ли */
+const paidInputValue = (v) => (v == null ? '' : v.toFixed(2).replace('.', ','));
+
+function paidDiffHtml(expected, paid) {
+  if (paid == null) return `<span class="muted small">${t('Впиши сумму, когда придут деньги, — сравню с расчётом.', 'Wpisz kwotę, gdy przyjdą pieniądze — porównam z wyliczeniem.')}</span>`;
+  const r = reconcile(expected, paid);
+  if (r.status === 'ok') return `<span class="paid-ok">${ic('check', 16)} ${t('Сходится с расчётом', 'Zgadza się z wyliczeniem')}</span>`;
+  if (r.status === 'less') return `<span class="paid-less">${t('Недоплатили', 'Brakuje')} ${money(-r.diff)}</span>`;
+  return `<span class="paid-more">${t('Пришло больше на', 'Wpłynęło więcej o')} ${money(r.diff)}</span>`;
+}
+
+function paidBlock(p, expected) {
+  return `<div class="paid">
+    <label class="lbl" for="paid-input">${t('Пришло на счёт, zł', 'Wpłynęło na konto, zł')}</label>
+    <input class="field" id="paid-input" data-field="paid" data-k="${iso(p.start)}" inputmode="decimal" autocomplete="off"
+      placeholder="${t('сумма из банка', 'kwota z banku')}" value="${paidInputValue(paidOf(p))}">
+    <div id="paid-diff">${paidDiffHtml(expected, paidOf(p))}</div>
+  </div>`;
 }
 
 /* ===================== Экран «Итоги» ===================== */
@@ -952,7 +1018,7 @@ function renderSettings() {
     ${isOwner() ? card('sync', t('Синхронизация', 'Synchronizacja'), '',
       `<p class="muted">${t('Ты владелец: записи, ставки и шапка отчёта одинаковые на всех твоих устройствах. Язык и тема — у каждого устройства свои.',
         'Jesteś właścicielem: wpisy, stawki i nagłówek są takie same na wszystkich Twoich urządzeniach. Język i motyw — osobno na każdym.')}</p>
-       <p class="muted small">${t('Последняя синхронизация', 'Ostatnia synchronizacja')}: ${S.sync.at ? fullDate(S.sync.at) : '—'}${Object.keys(S.sync.dirty).length || S.sync.metaDirty ? ` · ${t('есть неотправленное', 'są niewysłane zmiany')}` : ''}</p>
+       <p class="muted small">${t('Последняя синхронизация', 'Ostatnia synchronizacja')}: ${S.sync.at ? fullDate(S.sync.at) : '—'}${Object.keys(S.sync.dirty).length || Object.keys(S.sync.paidDirty).length || S.sync.metaDirty ? ` ·${t('есть неотправленное', 'są niewysłane zmiany')}` : ''}</p>
        <button class="btn tonal" data-act="sync-now">${ic('sync', 18)} ${t('Синхронизировать сейчас', 'Synchronizuj teraz')}</button>`) : ''}
     </div>
     <div class="footer">
@@ -1211,7 +1277,7 @@ async function shareFile(name, content, type) {
 
 const actions = {
   // Человек без доступа (код отключён / нет интернета) всё равно может забрать свои записи
-  backup() { shareFile(`uchet-raboty-${iso(todayDay())}.json`, JSON.stringify({ app: 'uchet-raboty', version: VERSION, entries: S.entries, rates: S.rates, header: S.settings.header || '' }, null, 1), 'application/json'); },
+  backup() { shareFile(`uchet-raboty-${iso(todayDay())}.json`, JSON.stringify({ app: 'uchet-raboty', version: VERSION, entries: S.entries, rates: S.rates, header: S.settings.header || '', paid: S.paid }, null, 1), 'application/json'); },
   tab(el) { const v = Number(el.dataset.v); if (v !== ui.tab) { ui.tab = v; if (v === 0) ui.day = ui.day; render(true); } else if (v === 0 && ui.day !== todayDay()) { ui.day = todayDay(); render(true); } },
   prev() { navigate(-1); },
   next() { navigate(1); },
@@ -1298,6 +1364,15 @@ const fields = {
   header(el) { S.settings.header = el.value; metaChanged(); save(); },
   'rate-point'(el) { const v = parseFloat(el.value.replace(',', '.')); if (Number.isFinite(v) && v >= 0) { S.rates.point = v; metaChanged(); save(); } },
   'rate-machine'(el) { const v = parseFloat(el.value.replace(',', '.')); if (Number.isFinite(v) && v >= 0) { S.rates.machine = v; metaChanged(); save(); } },
+  paid(el) {
+    const raw = el.value.replace(/[\s  ]/g, '').replace(',', '.');
+    const v = raw === '' ? null : Number(raw);
+    if (v != null && !(Number.isFinite(v) && v >= 0)) return; // ввели не число — ничего не меняем
+    setPaid(el.dataset.k, v == null ? null : Math.round(v * 100) / 100);
+    const p = periodFromIndex(ui.period);
+    const d = document.getElementById('paid-diff');
+    if (d) d.innerHTML = paidDiffHtml(payout(p).total, paidOf(p));
+  },
 };
 
 document.addEventListener('click', (ev) => {
@@ -1355,7 +1430,7 @@ darkMq.addEventListener('change', () => { if (S.settings.theme === 'system') app
 document.addEventListener('visibilitychange', () => {
   if (document.visibilityState === 'visible') { renderTop(); checkAccess(); if (offlineLocked()) renderSheet(); syncNow(); }
   // Уходим из приложения — сразу отправляем неотправленное (только владелец)
-  if (document.visibilityState === 'hidden' && (Object.keys(S.sync.dirty).length || S.sync.metaDirty)) syncNow();
+  if (document.visibilityState === 'hidden' && (Object.keys(S.sync.dirty).length || Object.keys(S.sync.paidDirty).length || S.sync.metaDirty)) syncNow();
 });
 setInterval(renderTop, 60000);
 
