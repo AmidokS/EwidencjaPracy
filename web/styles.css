@@ -239,16 +239,27 @@ button:disabled { opacity: .45; cursor: default; }
 /* Отчёты Жабок */
 .zlist { display: flex; flex-direction: column; gap: 8px; }
 .zrow { background: var(--card-hi); border-radius: 14px; padding: 10px 12px; display: flex; flex-direction: column; gap: 8px; }
-.zt { font-size: 14px; font-weight: 600; overflow-wrap: anywhere; }
-.zbtns { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+.zt, .zp-txt { display: flex; flex-direction: column; gap: 1px; min-width: 0; }
+.zt b, .zp-txt b { font: 700 16px var(--rounded); letter-spacing: .02em; overflow-wrap: anywhere; }
+.zt small, .zp-txt small { font-size: 13px; color: var(--text2); overflow-wrap: anywhere; }
 .zb { display: inline-flex; align-items: center; justify-content: center; gap: 6px; border: 0; border-radius: 12px; padding: 9px 10px;
-      font-size: 14px; font-weight: 650; background: var(--sc); color: var(--on-sc); }
-.zb.done { background: var(--primary); color: var(--on-primary); }
-.zpick { display: flex; flex-direction: column; gap: 6px; }
-.zp { display: flex; align-items: center; gap: 8px; text-align: left; border: 1px solid var(--outline-v); border-radius: 12px; padding: 9px 12px;
-      background: none; color: var(--text); font-size: 14px; }
-.zp span { overflow-wrap: anywhere; }
-.zp.on { background: var(--pc); color: var(--on-pc); border-color: transparent; font-weight: 600; }
+      font-size: 14px; font-weight: 650; background: var(--primary); color: var(--on-primary); }
+.zcount { font: 700 14px var(--rounded); padding: 3px 10px; border-radius: 999px; background: var(--card-hi); color: var(--text2); white-space: nowrap; }
+.zcount.full { background: var(--primary); color: var(--on-primary); }
+.zdone { display: flex; flex-wrap: wrap; gap: 6px; }
+.zchip { display: inline-flex; align-items: center; gap: 4px; border: 0; border-radius: 999px; padding: 5px 10px;
+         font-size: 13px; font-weight: 650; background: var(--pc); color: var(--on-pc); }
+.zall-done { display: flex; align-items: center; gap: 8px; margin: 0; font-weight: 650; color: var(--primary); }
+.zpick-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; font-size: 14px; color: var(--text2); }
+.zpick-head b { color: var(--text); }
+.zpick { display: flex; flex-direction: column; gap: 6px; max-height: 420px; overflow-y: auto; }
+.zp { display: flex; align-items: center; justify-content: space-between; gap: 10px; text-align: left; border: 0; border-radius: 14px;
+      padding: 10px 12px; background: var(--card-hi); color: var(--text); }
+.zp-box { flex: none; width: 26px; height: 26px; border-radius: 8px; display: grid; place-items: center;
+          border: 2px solid var(--outline); color: var(--on-primary); }
+.zp.on { background: var(--pc); color: var(--on-pc); }
+.zp.on small { color: inherit; opacity: .8; }
+.zp.on .zp-box { background: var(--primary); border-color: var(--primary); }
 .ztext { background: var(--card-hi); border-radius: 12px; padding: 10px 12px; font-size: 15px; font-weight: 600; overflow-wrap: anywhere; }
 
 /* Сверка выплаты */

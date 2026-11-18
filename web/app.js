@@ -2,7 +2,7 @@
 /* Учёт работы — PWA. Создатель: Artur Alimhulov.
    Данные хранятся на телефоне (localStorage) и копией на сервере под кодом доступа (см. «Записи на сервере»). */
 
-const VERSION = '3.1';
+const VERSION = '3.2';
 const STORE_KEY = 'uchet-raboty-v1';
 
 /* ==== calc:begin ====
@@ -421,11 +421,17 @@ function zabkiCard(d) {
   let body;
   if (zpick) {
     const items = [...new Set([...list, ...plan.map((i) => i.t)])];
+    const chosen = items.filter((s) => plan.some((i) => i.t === s)).length;
     body = items.length
-      ? `<p class="muted small">${t('Отметь Жабки на этот день', 'Zaznacz Żabki na ten dzień')}</p>
+      ? `<div class="zpick-head">
+          <span>${t('Выбрано', 'Wybrano')} <b>${chosen}</b> ${t('из', 'z')} ${items.length}</span>
+          <button class="link" data-act="z-all" data-on="${chosen < items.length ? 1 : 0}">${chosen < items.length ? t('Выбрать все', 'Zaznacz wszystkie') : t('Снять все', 'Odznacz wszystkie')}</button>
+        </div>
         <div class="zpick">${items.map((s) => {
-          const on = plan.some((i) => i.t === s);
-          return `<button class="zp ${on ? 'on' : ''}" data-act="z-toggle" data-t="${esc(s)}">${ic(on ? 'check' : 'plus', 16)}<span>${esc(s)}</span></button>`;
+          const on = plan.some((i) => i.t === s), p = zParts(s);
+          return `<button class="zp ${on ? 'on' : ''}" data-act="z-toggle" data-t="${esc(s)}" aria-pressed="${on}">
+            <span class="zp-txt"><b>${esc(p.code)}</b>${p.rest ? `<small>${esc(p.rest)}</small>` : ''}</span>
+            <span class="zp-box">${on ? ic('check', 16) : ''}</span></button>`;
         }).join('')}</div>
         <button class="btn primary" data-act="z-pick-done">${t('Готово', 'Gotowe')}</button>`
       : `<p class="muted">${t('Список Жабок пуст — добавь свои Жабки в Настройках (по одной в строке).', 'Lista Żabek jest pusta — dodaj swoje Żabki w Ustawieniach (jedna w linii).')}</p>
@@ -436,13 +442,29 @@ function zabkiCard(d) {
       : t('Добавь свои Жабки в Настройках — потом здесь выбираешь, какие в этот день, и отправляешь отчёты с фото.', 'Dodaj swoje Żabki w Ustawieniach — potem tu wybierasz, które w tym dniu, i wysyłasz raporty ze zdjęciami.')}</p>
       <button class="btn tonal" data-act="z-pick">${ic('check', 18)} ${t('Выбрать Жабки на этот день', 'Wybierz Żabki na ten dzień')}</button>`;
   } else {
-    body = `<div class="zlist">${plan.map((i, n) => `<div class="zrow">
-        <div class="zt">${esc(i.t)}</div>
-        <button class="zb ${i.a ? 'done' : ''}" data-act="z-rep" data-n="${n}">${ic(i.a ? 'check' : 'camera', 16)} ${i.a ? t('Отправлено', 'Wysłano') : 'Raport przed/po'}</button>
-      </div>`).join('')}</div>
+    // Несделанные — полностью, с кнопкой отчёта; сделанные — внизу маленькими метками (нажатие — открыть снова)
+    const todo = plan.map((i, n) => ({ i, n })).filter((x) => !x.i.a);
+    const sent = plan.map((i, n) => ({ i, n })).filter((x) => x.i.a);
+    body = `${todo.length ? `<div class="zlist">${todo.map(({ i, n }) => {
+        const p = zParts(i.t);
+        return `<div class="zrow">
+          <div class="zt"><b>${esc(p.code)}</b>${p.rest ? `<small>${esc(p.rest)}</small>` : ''}</div>
+          <button class="zb" data-act="z-rep" data-n="${n}">${ic('camera', 16)} Raport przed/po</button>
+        </div>`;
+      }).join('')}</div>` : `<p class="zall-done">${ic('check', 18)} ${t('Все отчёты отправлены', 'Wszystkie raporty wysłane')}</p>`}
+      ${sent.length ? `<div class="zdone">${sent.map(({ i, n }) =>
+        `<button class="zchip" data-act="z-rep" data-n="${n}" title="${esc(i.t)}">${ic('check', 14)} ${esc(zParts(i.t).code)}</button>`).join('')}</div>` : ''}
       <button class="link" data-act="z-pick">${t('Изменить выбор', 'Zmień wybór')}</button>`;
   }
-  return card('store', t('Отчёты Жабок', 'Raporty Żabek'), plan.length ? `<span class="hint">${done}/${plan.length} ✓</span>` : '', body);
+  return card('store', t('Отчёты Жабок', 'Raporty Żabek'),
+    plan.length ? `<span class="zcount ${done === plan.length ? 'full' : ''}">${done} / ${plan.length}</span>` : '', body);
+}
+
+/** «Bosch, Warszawa, Jutrzenki 105, ZG356-1» → номер «ZG356-1» и остальное «Bosch, Warszawa, Jutrzenki 105». */
+function zParts(line) {
+  const parts = String(line).split(',').map((s) => s.trim()).filter(Boolean);
+  if (parts.length < 2) return { code: String(line).trim(), rest: '' };
+  return { code: parts[parts.length - 1], rest: parts.slice(0, -1).join(', ') };
 }
 
 /** Отметить отчёт по Жабке отправленным (или снять отметку). */
@@ -457,7 +479,7 @@ function renderZrep() {
   const item = (entry(zrep.day).z || []).find((i) => i.t === zrep.t);
   const sent = item && item.a;
   root.innerHTML = `<div class="sheet-bg" data-zrep="bg"><div class="sheet mail-sheet" role="dialog" aria-modal="true">
-    <div class="row-between"><h2>Raport przed/po</h2>
+    <div class="row-between"><h2>${esc(zParts(zrep.t).code)}</h2>
       <button class="round" data-zrep="close" aria-label="${t('Закрыть', 'Zamknij')}">${ic('x', 20)}</button></div>
     <label class="lbl">${t('Текст в WhatsApp', 'Tekst do WhatsApp')}</label>
     <div class="ztext">${esc(zText(zrep.t))}</div>
@@ -1516,6 +1538,16 @@ const actions = {
   'mail-open'() { mailOpen(); },
   'z-pick'() { zpick = true; render(); },
   'z-pick-done'() { zpick = false; render(); },
+  'z-all'(el) {
+    const on = el.dataset.on === '1';
+    update(ui.day, (x) => {
+      const plan = x.z || [];
+      if (!on) { x.z = []; return; }
+      const keep = new Map(plan.map((i) => [i.t, i]));
+      x.z = [...new Set([...zlist(), ...plan.map((i) => i.t)])].map((s) => keep.get(s) || { t: s, a: false, b: false });
+    });
+    render();
+  },
   'z-toggle'(el) {
     const s = el.dataset.t, order = zlist();
     update(ui.day, (x) => {
