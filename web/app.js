@@ -1,8 +1,8 @@
 'use strict';
 /* Учёт работы — PWA. Создатель: Artur Alimhulov.
-   Все данные хранятся только на телефоне (localStorage). */
+   Данные хранятся на телефоне (localStorage) и копией на сервере под кодом доступа (см. «Записи на сервере»). */
 
-const VERSION = '2.8';
+const VERSION = '2.9';
 const STORE_KEY = 'uchet-raboty-v1';
 
 /* ==== calc:begin ====
@@ -91,7 +91,8 @@ const DEFAULTS = {
   reportHidden: 0,
   // Синхронизация между устройствами (только у владельца). since — метка сервера с прошлого раза,
   // dirty — дни, изменённые здесь и ещё не отправленные, deleted — когда день был очищен.
-  sync: { since: 0, dirty: {}, deleted: {}, metaU: 0, metaDirty: false, at: 0, paidDirty: {} },
+  // dataCode — чьи записи сейчас на этом устройстве (код доступа); при вводе другого кода записи меняются.
+  sync: { since: 0, dirty: {}, deleted: {}, metaU: 0, metaDirty: false, at: 0, paidDirty: {}, dataCode: '' },
   // Сверка выплаты: сколько реально пришло за период. Ключ — первый день периода, v: null — стёрто.
   paid: {},
 };
@@ -148,30 +149,31 @@ function update(e, fn) {
   const now = Date.now();
   if (isEmptyEntry(x)) {
     delete S.entries[k];
-    if (isOwner()) S.sync.deleted[k] = now;
+    S.sync.deleted[k] = now;
   } else {
     x.u = now; // когда изменено — чтобы при синхронизации победило более позднее
     S.entries[k] = x;
     delete S.sync.deleted[k];
   }
-  if (isOwner()) { S.sync.dirty[k] = 1; syncSoon(); }
+  S.sync.dirty[k] = 1;
+  syncSoon();
   save();
 }
 
-/** Ставки или шапка изменились — у владельца отправим их на другие устройства. */
+/** Ставки, шапка или раздел Жабки изменились — отправим на сервер. */
 function metaChanged() {
-  if (!isOwner()) return;
   S.sync.metaU = Date.now();
   S.sync.metaDirty = true;
   syncSoon();
 }
 
-/** Записать, сколько пришло за период (null — стереть). У владельца уйдёт на другие устройства. */
+/** Записать, сколько пришло за период (null — стереть). Уйдёт на сервер. */
 function setPaid(key, v) {
   const cur = S.paid[key];
   if ((cur ? cur.v : null) === v) return;
   S.paid[key] = { v, u: Date.now() };
-  if (isOwner()) { S.sync.paidDirty[key] = 1; syncSoon(); }
+  S.sync.paidDirty[key] = 1;
+  syncSoon();
   save();
 }
 const paidOf = (p) => { const x = S.paid[iso(p.start)]; return x && x.v != null ? x.v : null; };
@@ -537,21 +539,28 @@ function acceptServer(r) {
   S.auth.owner = !!r.owner;
 }
 
-/* ===================== Синхронизация владельца ===================== */
-/* Только у владельца: записи, ставки и шапка одинаковые на всех его устройствах.
-   Один и тот же день изменён на двух устройствах — остаётся более позднее изменение. */
+/* ===================== Записи на сервере (синхронизация) ===================== */
+/* Записи, ставки, шапка и раздел Жабки хранятся на сервере под кодом доступа — одинаковые на всех устройствах
+   с этим кодом, и при смене телефона ничего не пропадает. Одно и то же изменено на двух устройствах —
+   остаётся более позднее изменение. Владелец отличается только тем, что его код работает на любом количестве устройств. */
 const isOwner = () => !!(AUTH_API && S.auth.ok && S.auth.owner);
+const syncOn = () => !!(AUTH_API && S.auth.ok && S.auth.code);
 let syncBusy = false, syncTimer = null, syncedOnce = false;
+/** Почему не получилась последняя синхронизация: network, invalid (кода больше нет), denied (не это устройство) и т.п. */
+let syncError = '';
+const hasPendingSync = () => !!(Object.keys(S.sync.dirty).length || Object.keys(S.sync.paidDirty).length || S.sync.metaDirty);
 
 function syncSoon(ms = 4000) {
-  if (!isOwner()) return;
+  if (!syncOn()) return;
   clearTimeout(syncTimer);
   syncTimer = setTimeout(() => syncNow(), ms);
 }
 
-async function syncNow() {
-  if (!isOwner() || syncBusy) return false;
+/** force — даже если приложение сейчас заперто (нужно, чтобы дослать записи старого кода при вводе нового). */
+async function syncNow(force) {
+  if (!(force ? AUTH_API && S.auth.code : syncOn()) || syncBusy) return false;
   syncBusy = true;
+  syncError = '';
   const z = S.sync;
   // Первый раз за запуск отправляем все дни целиком — так ничего не потеряется, даже если раньше что-то не дошло
   const all = !syncedOnce || !z.since;
@@ -563,7 +572,7 @@ async function syncNow() {
     else if (z.deleted[k]) days[k] = { del: 1, u: z.deleted[k] };
   }
   const sendMeta = all || z.metaDirty;
-  const meta = sendMeta ? { rates: S.rates, header: S.settings.header || '', u: z.metaU || 1 } : null;
+  const meta = sendMeta ? { rates: S.rates, header: S.settings.header || '', zabka: !!S.settings.zabka, u: z.metaU || 1 } : null;
   const paid = {};
   for (const k of all ? Object.keys(S.paid) : Object.keys(z.paidDirty)) if (S.paid[k]) paid[k] = S.paid[k];
   // Снимаем отметку «не отправлено» заранее: если за время запроса день снова изменят, отметка встанет снова
@@ -574,8 +583,10 @@ async function syncNow() {
   const metaWas = z.metaDirty;
   z.metaDirty = false;
   try {
-    const r = await api('/sync', { code: S.auth.code, device: deviceId(), since: z.since || 0, days, meta, paid });
-    if (!r || !r.ok) throw new Error('sync');
+    let r;
+    try { r = await api('/sync', { code: S.auth.code, device: deviceId(), since: z.since || 0, days, meta, paid }); }
+    catch (e) { syncError = 'network'; throw e; }
+    if (!r || !r.ok) { syncError = (r && r.reason) || 'error'; throw new Error('sync'); }
     let changedUi = false;
     for (const [k, d] of Object.entries(r.days || {})) {
       const loc = S.entries[k];
@@ -599,6 +610,9 @@ async function syncNow() {
       if (typeof r.meta.header === 'string' && r.meta.header !== S.settings.header) {
         S.settings.header = r.meta.header; changedUi = true;
       }
+      if (typeof r.meta.zabka === 'boolean' && r.meta.zabka !== !!S.settings.zabka) {
+        S.settings.zabka = r.meta.zabka; changedUi = true;
+      }
       z.metaU = r.meta.u;
     }
     for (const [k, d] of Object.entries(r.paid || {})) {
@@ -610,6 +624,7 @@ async function syncNow() {
     }
     z.since = r.now;
     z.at = Date.now();
+    z.dataCode = S.auth.code; // записи на этом устройстве — этого кода
     syncedOnce = true;
     save();
     // Не перерисовываем, пока человек что-то печатает — иначе собьётся ввод
@@ -627,6 +642,38 @@ async function syncNow() {
   } finally {
     syncBusy = false;
   }
+}
+
+/**
+ * Ввели код, а записи на этом устройстве — другого кода (например, владелец ввёл код работника).
+ * Сначала досылаем всё на сервер по старому коду, кладём запасную копию в uchet-raboty-stash-<КОД>
+ * и очищаем — записи нового кода придут с сервера. Если старого кода больше нет (его сменили в админке),
+ * это записи того же человека: они остаются и уходят на сервер под новым кодом.
+ */
+async function switchData(code) {
+  const prev = S.sync.dataCode || S.auth.code || '';
+  const hasData = Object.keys(S.entries).length || Object.keys(S.paid).length;
+  if (!prev || prev === code || !hasData) { S.sync.dataCode = code; return; }
+  syncedOnce = false; // отправить старые записи целиком
+  const sent = await syncNow(true);
+  if (!sent && syncError === 'invalid') {
+    Object.assign(S.sync, { since: 0, dataCode: code });
+    syncedOnce = false;
+    save();
+    return;
+  }
+  try {
+    localStorage.setItem(`uchet-raboty-stash-${prev}`, JSON.stringify({
+      at: Date.now(), code: prev, sent, entries: S.entries, paid: S.paid, rates: S.rates, header: S.settings.header || '',
+    }));
+  } catch (e) { /* нет места — копия не обязательна, записи уже на сервере */ }
+  S.entries = {};
+  S.paid = {};
+  S.settings.header = '';
+  S.settings.zabka = false;
+  S.sync = { ...JSON.parse(JSON.stringify(DEFAULTS.sync)), dataCode: code };
+  syncedOnce = false;
+  save();
 }
 
 /* Без связи с сервером дольше, чем разрешил владелец, — просим подключиться к интернету */
@@ -1030,10 +1077,13 @@ function renderSettings() {
        <input class="field" data-field="rate-point" inputmode="decimal" value="${rate(S.rates.point)}">
        ${Z() ? `<label class="lbl">${t('За 1 автомат Жабки, zł', 'Za 1 automat Żabki, zł')}</label>
        <input class="field" data-field="rate-machine" inputmode="decimal" value="${rate(S.rates.machine)}">` : ''}`)}
-    ${isOwner() ? card('sync', t('Синхронизация', 'Synchronizacja'), '',
-      `<p class="muted">${t('Ты владелец: записи, ставки и шапка отчёта одинаковые на всех твоих устройствах. Язык и тема — у каждого устройства свои.',
-        'Jesteś właścicielem: wpisy, stawki i nagłówek są takie same na wszystkich Twoich urządzeniach. Język i motyw — osobno na każdym.')}</p>
-       <p class="muted small">${t('Последняя синхронизация', 'Ostatnia synchronizacja')}: ${S.sync.at ? fullDate(S.sync.at) : '—'}${Object.keys(S.sync.dirty).length || Object.keys(S.sync.paidDirty).length || S.sync.metaDirty ? ` ·${t('есть неотправленное', 'są niewysłane zmiany')}` : ''}</p>
+    ${syncOn() ? card('sync', t('Записи на сервере', 'Wpisy na serwerze'), '',
+      `<p class="muted">${isOwner()
+        ? t('Записи, ставки и шапка отчёта хранятся на сервере под твоим кодом и одинаковые на всех твоих устройствах. Язык и тема — у каждого устройства свои.',
+          'Wpisy, stawki i nagłówek są na serwerze pod Twoim kodem i takie same na wszystkich Twoich urządzeniach. Język i motyw — osobno na każdym.')
+        : t('Записи, ставки и шапка отчёта хранятся копией на сервере под твоим кодом. Сменишь телефон — введи код на новом, и всё будет на месте.',
+          'Wpisy, stawki i nagłówek są w kopii na serwerze pod Twoim kodem. Zmienisz telefon — wpisz kod na nowym i wszystko będzie na miejscu.')}</p>
+       <p class="muted small">${t('Последняя синхронизация', 'Ostatnia synchronizacja')}: ${S.sync.at ? fullDate(S.sync.at) : '—'}${hasPendingSync() ? ` · ${t('есть неотправленное', 'są niewysłane zmiany')}` : ''}</p>
        <button class="btn tonal" data-act="sync-now">${ic('sync', 18)} ${t('Синхронизировать сейчас', 'Synchronizuj teraz')}</button>`) : ''}
     </div>
     <div class="footer">
@@ -1137,8 +1187,8 @@ function renderSheet() {
   $sheet.innerHTML = `<div class="sheet-bg"><div class="sheet">
     <img class="logo" src="icons/icon-192.png" alt="">
     <h2>${t('Учёт работы', 'Ewidencja pracy')}</h2>
-    <p class="muted">${t('Точки катеринга, часы и готовый отчёт за 15 дней. Делаешь Жабки — включи их в Настройках. Все данные хранятся только на твоём телефоне.',
-      'Punkty cateringu, godziny i gotowy raport za 15 dni. Robisz Żabki — włącz je w Ustawieniach. Wszystkie dane są tylko w Twoim telefonie.')}</p>
+    <p class="muted">${t('Точки катеринга, часы и готовый отчёт за 15 дней. Делаешь Жабки — включи их в Настройках. Записи хранятся на телефоне и копией на сервере под твоим кодом — при смене телефона ничего не пропадёт.',
+      'Punkty cateringu, godziny i gotowy raport za 15 dni. Robisz Żabki — włącz je w Ustawieniach. Wpisy są w telefonie i w kopii na serwerze pod Twoim kodem — przy zmianie telefonu nic nie zginie.')}</p>
     <div class="seg"><button class="${st.lang === 'ru' ? 'on' : ''}" data-act="lang" data-v="ru">Русский</button><button class="${st.lang === 'pl' ? 'on' : ''}" data-act="lang" data-v="pl">Polski</button></div>
     <label class="lbl">${t('Шапка отчёта — будет в начале каждого отчёта', 'Nagłówek raportu — będzie na początku każdego raportu')}</label>
     <textarea class="field" data-field="header" rows="3" placeholder="${t('Имя Фамилия&#10;Код&#10;Номер', 'Imię Nazwisko&#10;Kod&#10;Numer')}">${esc(st.header)}</textarea>
@@ -1332,6 +1382,7 @@ const actions = {
     try {
       const r = await api('/activate', { code, device: deviceId() });
       if (r && r.ok) {
+        await switchData(code);
         S.auth = { ...S.auth, code, ok: true, name: r.name || '', reason: '', checkedAt: Date.now() };
         acceptServer(r);
         save();
@@ -1431,7 +1482,7 @@ document.addEventListener('change', (ev) => {
   const el = ev.target;
   if (el.dataset.time !== undefined) onTime(el);
   if (el.dataset.date !== undefined && el.value) { ui.day = fromIso(el.value); render(true); }
-  if (el.dataset.check === 'zabka') { S.settings.zabka = el.checked; save(); render(); }
+  if (el.dataset.check === 'zabka') { S.settings.zabka = el.checked; metaChanged(); save(); render(); }
   if (el.dataset.field === 'rate-point' || el.dataset.field === 'rate-machine') render();
 });
 
@@ -1448,7 +1499,7 @@ document.addEventListener('visibilitychange', () => {
   if (document.visibilityState === 'visible') { renderTop(); checkAccess(); if (offlineLocked()) renderSheet(); syncNow(); presence(true); }
   if (document.visibilityState === 'hidden') presence(false);
   // Уходим из приложения — сразу отправляем неотправленное (только владелец)
-  if (document.visibilityState === 'hidden' && (Object.keys(S.sync.dirty).length || Object.keys(S.sync.paidDirty).length || S.sync.metaDirty)) syncNow();
+  if (document.visibilityState === 'hidden' && hasPendingSync()) syncNow();
 });
 setInterval(renderTop, 60000);
 

@@ -65,6 +65,30 @@
     .acts button { border: 0; border-radius: 12px; padding: 10px 12px; font-size: 14px; font-weight: 600; background: var(--sc); color: var(--on-sc); }
     .acts button.main { grid-column: 1 / -1; background: var(--primary); color: var(--on-primary); }
     .acts button.danger { background: var(--error-bg); color: var(--error); }
+    .acts button.main.alt { background: var(--pc); color: var(--on-pc); }
+
+    /* Записи человека (только просмотр) */
+    .rec-sheet { max-width: 760px; max-height: min(92vh, 960px); overflow-y: auto; gap: 14px; }
+    .rec-nav { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+    .rec-nav b { font-size: 18px; }
+    .rec-nav button { border: 0; background: var(--card-hi); color: var(--text); width: 40px; height: 40px; border-radius: 50%; font-size: 18px; }
+    .rec-nav button:disabled { opacity: .35; }
+    .rec-halves { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+    @media (max-width: 620px) { .rec-halves { grid-template-columns: 1fr; } }
+    .rec-half { background: var(--card-hi); border-radius: 16px; padding: 12px 14px; display: flex; flex-direction: column; gap: 4px; font-size: 14px; }
+    .rec-half h4 { margin: 0 0 2px; font-size: 15px; }
+    .rec-half .row2 { display: flex; justify-content: space-between; gap: 8px; }
+    .rec-half .row2 span:first-child { color: var(--text2); }
+    .rec-half .tot { font-weight: 700; font-size: 16px; border-top: 1px solid var(--outline-v); padding-top: 6px; margin-top: 2px; }
+    .rec-half .tot span:last-child { color: var(--primary); }
+    .rec-ok { color: var(--primary); font-weight: 650; }
+    .rec-bad { color: var(--error); font-weight: 650; }
+    .rec-table { width: 100%; border-collapse: collapse; font-size: 14px; }
+    .rec-table th { text-align: left; font-size: 12px; color: var(--text2); font-weight: 700; text-transform: uppercase; letter-spacing: .03em; padding: 6px 6px; border-bottom: 1px solid var(--outline-v); }
+    .rec-table td { padding: 7px 6px; border-bottom: 1px solid var(--outline-v); vertical-align: top; }
+    .rec-table td.n { text-align: right; white-space: nowrap; font-variant-numeric: tabular-nums; }
+    .rec-table td.rnote { color: var(--text2); overflow-wrap: anywhere; }
+    .rec-meta { font-size: 13px; color: var(--text2); white-space: pre-wrap; }
     .empty { text-align: center; padding: 28px 12px; color: var(--text2); background: var(--card); border-radius: 18px; }
 
     /* Настройки */
@@ -409,6 +433,7 @@
         </div>
         <div class="acts">
           <button class="main" data-a="invite" data-c="${c}">Копировать приглашение</button>
+          <button class="main alt" data-a="records" data-c="${c}">Записи</button>
           <button data-a="rename" data-c="${c}">Переименовать</button>
           <button data-a="note" data-c="${c}">${it.note ? 'Изменить заметку' : 'Добавить заметку'}</button>
           ${it.owner ? '' : `<button data-a="expires" data-c="${c}">Срок действия</button>`}
@@ -531,9 +556,10 @@
           <dt>Копировать приглашение</dt><dd>Готовый текст со ссылкой и кодом — отправь человеку в мессенджер.</dd>
           <dt>Отключить</dt><dd>Закрыть доступ. Сработает при следующем запуске приложения с интернетом.</dd>
           <dt>Срок действия</dt><dd>Код сам перестанет работать после выбранной даты.</dd>
-          <dt>Сменить код</dt><dd>Старый код сразу перестаёт работать, человек получает новый.</dd>
+          <dt>Сменить код</dt><dd>Старый код сразу перестаёт работать, человек получает новый. Записи на сервере переезжают на новый код.</dd>
           <dt>Отвязать телефон</dt><dd>Если человек сменил телефон: он вводит тот же код на новом. Код работает только на одном телефоне — кроме твоего кода владельца, он работает везде.</dd>
-          <dt>Удалить</dt><dd>Код исчезает из списка навсегда.</dd>
+          <dt>Записи</dt><dd>Посмотреть записи человека: дни, итоги и выплата по половинам месяца, что пришло на счёт. Только просмотр.</dd>
+          <dt>Удалить</dt><dd>Код исчезает из списка навсегда вместе с записями на сервере.</dd>
           <dt>Сообщить всем об обновлении</dt><dd>Появляется, когда на сайт выложен новый APK. У людей с APK при запуске появится кнопка «Обновить».</dd>
         </dl>
       </section>`;
@@ -628,8 +654,108 @@
     return `<div class="vlist">${html}</div>${none ? `<p class="muted small" style="margin:0">Ещё не входили: ${none}</p>` : ''}`;
   }
 
+  /* ---------- Записи человека (только просмотр) ---------- */
+  /* Деньги считаются тем же кодом, что и в приложении: берём из app.js кусок между calc:begin и calc:end
+     (его же проверяют тесты) — так страница управления и приложение не разойдутся в расчётах. */
+  let CALC = null;
+  async function calcLib() {
+    if (CALC) return CALC;
+    const src = await (await fetch(`app.js?x=${Date.now()}`, { cache: 'no-store' })).text();
+    const a = src.indexOf('/* ==== calc:begin'), b = src.indexOf('/* ==== calc:end ==== */');
+    if (a < 0 || b < a) throw new Error('calc');
+    CALC = new Function(`${src.slice(a, b)}\nreturn { dayOf, ymd, iso, payPeriod, monthIndexOf, monthFirst, daysInMonth, worked, summarizeIn, payoutIn, reconcile };`)();
+    return CALC;
+  }
+  const MONTHS = ['Январь', 'Февраль', 'Март', 'Апрель', 'Май', 'Июнь', 'Июль', 'Август', 'Сентябрь', 'Октябрь', 'Ноябрь', 'Декабрь'];
+  const MONTHS_GEN = ['января', 'февраля', 'марта', 'апреля', 'мая', 'июня', 'июля', 'августа', 'сентября', 'октября', 'ноября', 'декабря'];
+  const WD = ['вс', 'пн', 'вт', 'ср', 'чт', 'пт', 'сб'];
+  const zl = (v) => `${new Intl.NumberFormat('ru-RU', { minimumFractionDigits: 2, maximumFractionDigits: 2 }).format(v)} zł`;
+  const rt = (v) => new Intl.NumberFormat('ru-RU', { minimumFractionDigits: 2, maximumFractionDigits: 2 }).format(v);
+  const hm = (m) => `${Math.floor(m / 60)}:${p2(m % 60)}`;
+
+  async function openRecords(it) {
+    openSheet({ kind: 'records', item: it, loading: true });
+    try {
+      const [r, C] = await Promise.all([call(`/admin/records?code=${encodeURIComponent(it.code)}`), calcLib()]);
+      const entries = {};
+      for (const [k, d] of Object.entries(r.days || {})) {
+        if (d.del) continue;
+        entries[k] = { points: d.p || 0, machines: d.m || 0, start: d.s ?? null, end: d.e ?? null, note: d.n || '' };
+      }
+      const meta = r.meta || {};
+      const rates = meta.rates && meta.rates.point > 0 ? meta.rates : { point: 2.9, machine: 35 };
+      const zabka = typeof meta.zabka === 'boolean' ? meta.zabka : Object.values(entries).some((x) => x.machines > 0);
+      // Начинаем с последнего месяца, где есть записи (или с текущего)
+      const keys = Object.keys(entries).sort();
+      const last = keys.length ? keys[keys.length - 1] : isoDate(Date.now());
+      const [y, m] = last.split('-').map(Number);
+      const months = [...new Set(keys.map((k) => k.slice(0, 7)))];
+      sheet = { kind: 'records', item: it, C, entries, rates, zabka, paid: r.paid || {}, header: meta.header || '', at: r.at, month: y * 12 + m - 1, months };
+    } catch (e) {
+      sheet = { kind: 'records', item: it, error: e.message === 'no_records' ? 'Записи на сервере ещё не включены.' : 'Не удалось загрузить записи.' };
+    }
+    if (sheet && sheet.kind === 'records') openSheet(sheet);
+  }
+
+  function recordsHtml(s) {
+    const it = s.item;
+    const head = `<button class="x" data-close aria-label="Закрыть">✕</button><h2>Записи · ${esc(it.name)}</h2>`;
+    if (s.loading) return `${head}<p class="muted">Загружаю…</p>`;
+    if (s.error) return `${head}<p class="err">${esc(s.error)}</p>`;
+    const C = s.C;
+    const y = Math.floor(s.month / 12), m = s.month % 12 + 1, n = C.daysInMonth(y, m);
+    const halves = [{ start: C.dayOf(y, m, 1), end: C.dayOf(y, m, 15) }, { start: C.dayOf(y, m, 16), end: C.dayOf(y, m, n) }];
+    const halfHtml = (p) => {
+      const sm = C.summarizeIn(s.entries, p, s.zabka), pay = C.payoutIn(s.entries, p, s.rates, s.zabka);
+      const pd = s.paid[C.iso(p.start)];
+      const paid = pd && pd.v != null ? pd.v : null;
+      let rc = '<span class="muted">не указано</span>';
+      if (paid != null) {
+        const r = C.reconcile(pay.total, paid);
+        rc = r.status === 'ok' ? `<span class="rec-ok">${zl(paid)} ✓</span>`
+          : r.status === 'less' ? `<span class="rec-bad">${zl(paid)} · недоплатили ${zl(-r.diff)}</span>`
+          : `<span class="rec-ok">${zl(paid)} · больше на ${zl(r.diff)}</span>`;
+      }
+      return `<div class="rec-half">
+        <h4>${C.ymd(p.start).d}–${C.ymd(p.end).d} ${MONTHS_GEN[m - 1]}</h4>
+        <div class="row2"><span>Дней · часов</span><span>${sm.workDays} · ${hm(sm.minutes)}</span></div>
+        <div class="row2"><span>Точки ${pay.points} × ${rt(s.rates.point)}</span><span>${zl(pay.pointsMoney)}</span></div>
+        ${s.zabka ? (pay.paidNow
+          ? `<div class="row2"><span>Жабка за месяц ${pay.machines} × ${rt(s.rates.machine)}</span><span>${zl(pay.machinesMoney)}</span></div>`
+          : `<div class="row2"><span>Жабка ${pay.machines} (оплата в 16–${n})</span><span class="muted">${zl(pay.machinesMoney)}</span></div>`) : ''}
+        <div class="row2 tot"><span>К выплате</span><span>${zl(pay.total)}</span></div>
+        <div class="row2"><span>Пришло на счёт</span>${rc}</div>
+      </div>`;
+    };
+    const rows = [];
+    for (let d = 1; d <= n; d++) {
+      const k = `${y}-${p2(m)}-${p2(d)}`, x = s.entries[k];
+      if (!x) continue;
+      const wd = WD[new Date(y, m - 1, d).getDay()];
+      rows.push(`<tr><td>${p2(d)}.${p2(m)} ${wd}</td><td class="n">${x.points || '—'}</td>${s.zabka ? `<td class="n">${x.machines || '—'}</td>` : ''}
+        <td class="n">${C.worked(x) ? hm(C.worked(x)) : '—'}</td><td class="rnote">${esc(x.note || '')}</td></tr>`);
+    }
+    const ym = `${y}-${p2(m)}`;
+    const prevM = s.months.filter((k) => k < ym).pop(), nextM = s.months.find((k) => k > ym);
+    return `${head}
+      <p class="muted small" style="margin:0">${s.at ? `Последняя синхронизация: ${when(s.at)}` : 'С этого кода ещё ни разу не синхронизировались — записи появятся, когда человек откроет новую версию приложения с интернетом.'} Только просмотр.</p>
+      <div class="rec-nav">
+        <button data-rm="${prevM || ''}" ${prevM ? '' : 'disabled'} aria-label="Предыдущий месяц с записями">‹</button>
+        <b>${MONTHS[m - 1]} ${y}</b>
+        <button data-rm="${nextM || ''}" ${nextM ? '' : 'disabled'} aria-label="Следующий месяц с записями">›</button>
+      </div>
+      <div class="rec-halves">${halves.map(halfHtml).join('')}</div>
+      ${rows.length ? `<table class="rec-table"><thead><tr><th>Дата</th><th style="text-align:right">Точки</th>${s.zabka ? '<th style="text-align:right">Жабка</th>' : ''}<th style="text-align:right">Часы</th><th>Заметка</th></tr></thead>
+        <tbody>${rows.join('')}</tbody></table>` : '<p class="muted">В этом месяце записей нет.</p>'}
+      ${s.header ? `<div><label class="lbl">Шапка отчёта</label><div class="rec-meta">${esc(s.header)}</div></div>` : ''}
+      <p class="muted small" style="margin:0">Ставки: ${rt(s.rates.point)} zł за точку${s.zabka ? `, ${rt(s.rates.machine)} zł за автомат Жабки` : ' · Жабка выключена'}${s.months.length ? ` · месяцев с записями: ${s.months.length}` : ''}</p>`;
+  }
+
   function sheetHtml() {
     if (!sheet) return '';
+    if (sheet.kind === 'records') {
+      return `<div class="sheet-bg" data-close><div class="sheet rec-sheet" role="dialog" aria-modal="true" aria-label="Записи">${recordsHtml(sheet)}</div></div>`;
+    }
     if (sheet.kind === 'code') {
       const it = sheet.item;
       return `<div class="sheet-bg" data-close><div class="sheet" role="dialog" aria-modal="true" aria-label="${esc(sheet.title)}">
@@ -781,6 +907,13 @@
     const close = ev.target.closest('[data-close]');
     if (close && (close !== ev.target.closest('.sheet-bg') || ev.target === close)) { openSheet(null); return; }
     if (ev.target.closest('#new')) { openSheet({ kind: 'new' }); return; }
+    const rm = ev.target.closest('[data-rm]');
+    if (rm && sheet && sheet.kind === 'records' && rm.dataset.rm) {
+      const [ry, rmo] = rm.dataset.rm.split('-').map(Number);
+      sheet.month = ry * 12 + rmo - 1;
+      openSheet(sheet);
+      return;
+    }
     if (ev.target.closest('#create')) { createCode(); return; }
 
     const tb = ev.target.closest('[data-tab]');
@@ -844,6 +977,7 @@
     const it = items.find((i) => i.code === code) || (sheet && sheet.item && sheet.item.code === code ? sheet.item : null);
     if (!it) return;
     if (action === 'invite') { copy(invite(it)); return; }
+    if (action === 'records') { openRecords(it); return; }
     if (action === 'regen') {
       if (!await dialog({ title: 'Сменить код?', text: `«${it.name}» получит новый код. Старый код ${it.code} сразу перестанет работать — человеку нужно будет ввести новый.`, ok: 'Сменить код' })) return;
       try {
@@ -891,7 +1025,7 @@
     }
     const ask = {
       disable: { title: 'Отключить доступ?', text: `«${it.name}» не сможет пользоваться приложением. Сработает при следующем запуске с интернетом. Включить обратно можно в любой момент.`, ok: 'Отключить', danger: true },
-      delete: { title: 'Удалить код?', text: `Код «${it.name}» удалится навсегда, человек потеряет доступ к приложению. Отменить это нельзя.`, ok: 'Удалить', danger: true },
+      delete: { title: 'Удалить код?', text: `Код «${it.name}» удалится навсегда вместе с его записями на сервере, человек потеряет доступ к приложению. Записи на его телефоне останутся. Отменить это нельзя.`, ok: 'Удалить', danger: true },
       unbind: it.owner
         ? { title: 'Выйти на всех устройствах?', text: 'Приложение на каждом твоём устройстве попросит ввести код заново. Записи на устройствах останутся.', ok: 'Выйти везде' }
         : { title: 'Отвязать телефон?', text: `Старый телефон «${it.name}» потеряет доступ, а код можно будет ввести на новом.`, ok: 'Отвязать' },
