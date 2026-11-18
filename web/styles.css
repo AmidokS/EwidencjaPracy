@@ -244,6 +244,18 @@ button:disabled { opacity: .45; cursor: default; }
 .zt small, .zp-txt small { font-size: 13px; color: var(--text2); overflow-wrap: anywhere; }
 .zb { display: inline-flex; align-items: center; justify-content: center; gap: 6px; border: 0; border-radius: 12px; padding: 9px 10px;
       font-size: 14px; font-weight: 650; background: var(--primary); color: var(--on-primary); }
+.znext { background: var(--pc); color: var(--on-pc); border-radius: 16px; padding: 12px; display: flex; flex-direction: column; gap: 8px; }
+.znext .zt small { color: inherit; opacity: .8; }
+.znext-lbl { font-size: 12px; font-weight: 700; text-transform: uppercase; letter-spacing: .05em; opacity: .8; }
+.zqueue { display: flex; flex-direction: column; border-radius: 14px; overflow: hidden; background: var(--card-hi); }
+.zq { display: grid; grid-template-columns: 24px auto 1fr 20px; align-items: center; gap: 10px; border: 0; background: none;
+      color: var(--text); padding: 9px 12px; text-align: left; font-size: 14px; }
+.zq + .zq { border-top: 1px solid var(--outline-v); }
+.zq b { font: 700 15px var(--rounded); white-space: nowrap; }
+.zq small { color: var(--text2); font-size: 13px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+.zq .ic { color: var(--primary); }
+.zq-n { width: 22px; height: 22px; border-radius: 50%; display: grid; place-items: center; font: 700 12px var(--rounded);
+        background: var(--outline-v); color: var(--text2); }
 .zcount { font: 700 14px var(--rounded); padding: 3px 10px; border-radius: 999px; background: var(--card-hi); color: var(--text2); white-space: nowrap; }
 .zcount.full { background: var(--primary); color: var(--on-primary); }
 .zdone { display: flex; flex-wrap: wrap; gap: 6px; }
@@ -255,8 +267,8 @@ button:disabled { opacity: .45; cursor: default; }
 .zpick { display: flex; flex-direction: column; gap: 6px; max-height: 420px; overflow-y: auto; }
 .zp { display: flex; align-items: center; justify-content: space-between; gap: 10px; text-align: left; border: 0; border-radius: 14px;
       padding: 10px 12px; background: var(--card-hi); color: var(--text); }
-.zp-box { flex: none; width: 26px; height: 26px; border-radius: 8px; display: grid; place-items: center;
-          border: 2px solid var(--outline); color: var(--on-primary); }
+.zp-box { flex: none; width: 28px; height: 28px; border-radius: 50%; display: grid; place-items: center;
+          border: 2px solid var(--outline); color: var(--on-primary); font: 700 14px var(--rounded); }
 .zp.on { background: var(--pc); color: var(--on-pc); }
 .zp.on small { color: inherit; opacity: .8; }
 .zp.on .zp-box { background: var(--primary); border-color: var(--primary); }

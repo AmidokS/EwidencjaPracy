@@ -2,7 +2,7 @@
 /* Учёт работы — PWA. Создатель: Artur Alimhulov.
    Данные хранятся на телефоне (localStorage) и копией на сервере под кодом доступа (см. «Записи на сервере»). */
 
-const VERSION = '3.3';
+const VERSION = '3.4';
 const STORE_KEY = 'uchet-raboty-v1';
 
 /* ==== calc:begin ====
@@ -427,11 +427,12 @@ function zabkiCard(d) {
           <span>${t('Выбрано', 'Wybrano')} <b>${chosen}</b> ${t('из', 'z')} ${items.length}</span>
           <button class="link" data-act="z-all" data-on="${chosen < items.length ? 1 : 0}">${chosen < items.length ? t('Выбрать все', 'Zaznacz wszystkie') : t('Снять все', 'Odznacz wszystkie')}</button>
         </div>
+        <p class="muted small" style="margin:0">${t('Отмечай по порядку работы: номер — очередь. Чтобы поменять порядок, сними и отметь снова.', 'Zaznaczaj w kolejności pracy: numer to kolejka. Aby zmienić kolejność, odznacz i zaznacz ponownie.')}</p>
         <div class="zpick">${items.map((s) => {
-          const on = plan.some((i) => i.t === s), p = zParts(s);
+          const k = plan.findIndex((i) => i.t === s), on = k >= 0, p = zParts(s);
           return `<button class="zp ${on ? 'on' : ''}" data-act="z-toggle" data-t="${esc(s)}" aria-pressed="${on}">
             <span class="zp-txt"><b>${esc(p.code)}</b>${p.rest ? `<small>${esc(p.rest)}</small>` : ''}</span>
-            <span class="zp-box">${on ? ic('check', 16) : ''}</span></button>`;
+            <span class="zp-box">${on ? k + 1 : ''}</span></button>`;
         }).join('')}</div>
         <button class="btn primary" data-act="z-pick-done">${t('Готово', 'Gotowe')}</button>`
       : `<p class="muted">${t('Список Жабок пуст — добавь свои Жабки в Настройках (по одной в строке).', 'Lista Żabek jest pusta — dodaj swoje Żabki w Ustawieniach (jedna w linii).')}</p>
@@ -442,16 +443,24 @@ function zabkiCard(d) {
       : t('Добавь свои Жабки в Настройках — потом здесь выбираешь, какие в этот день, и отправляешь отчёты с фото.', 'Dodaj swoje Żabki w Ustawieniach — potem tu wybierasz, które w tym dniu, i wysyłasz raporty ze zdjęciami.')}</p>
       <button class="btn tonal" data-act="z-pick">${ic('check', 18)} ${t('Выбрать Жабки на этот день', 'Wybierz Żabki na ten dzień')}</button>`;
   } else {
-    // Несделанные — полностью, с кнопкой отчёта; сделанные — внизу маленькими метками (нажатие — открыть снова)
+    // Очередь — в порядке выбора. Следующая — крупно, остальные — тонкими строками (любую можно сделать
+    // не по очереди), сделанные — внизу маленькими метками (нажатие — открыть снова).
     const todo = plan.map((i, n) => ({ i, n })).filter((x) => !x.i.a);
     const sent = plan.map((i, n) => ({ i, n })).filter((x) => x.i.a);
-    body = `${todo.length ? `<div class="zlist">${todo.map(({ i, n }) => {
-        const p = zParts(i.t);
-        return `<div class="zrow">
+    const next = todo[0];
+    body = `${next ? (() => {
+        const p = zParts(next.i.t);
+        return `<div class="znext">
+          <div class="znext-lbl">${t('Следующая', 'Następna')} · ${next.n + 1}</div>
           <div class="zt"><b>${esc(p.code)}</b>${p.rest ? `<small>${esc(p.rest)}</small>` : ''}</div>
-          <button class="zb" data-act="z-rep" data-n="${n}">${ic('camera', 16)} Raport przed/po</button>
+          <button class="zb" data-act="z-rep" data-n="${next.n}">${ic('camera', 16)} Raport przed/po</button>
         </div>`;
-      }).join('')}</div>` : `<p class="zall-done">${ic('check', 18)} ${t('Все отчёты отправлены', 'Wszystkie raporty wysłane')}</p>`}
+      })() : `<p class="zall-done">${ic('check', 18)} ${t('Все отчёты отправлены', 'Wszystkie raporty wysłane')}</p>`}
+      ${todo.length > 1 ? `<div class="zqueue">${todo.slice(1).map(({ i, n }) => {
+        const p = zParts(i.t);
+        return `<button class="zq" data-act="z-rep" data-n="${n}" title="${esc(i.t)}">
+          <span class="zq-n">${n + 1}</span><b>${esc(p.code)}</b><small>${esc(p.street)}</small>${ic('camera', 16)}</button>`;
+      }).join('')}</div>` : ''}
       ${sent.length ? `<div class="zdone">${sent.map(({ i, n }) =>
         `<button class="zchip" data-act="z-rep" data-n="${n}" title="${esc(i.t)}">${ic('check', 14)} ${esc(zParts(i.t).code)}</button>`).join('')}</div>` : ''}
       <button class="link" data-act="z-pick">${t('Изменить выбор', 'Zmień wybór')}</button>`;
@@ -463,8 +472,9 @@ function zabkiCard(d) {
 /** «Bosch, Warszawa, Jutrzenki 105, ZG356-1» → номер «ZG356-1» и остальное «Bosch, Warszawa, Jutrzenki 105». */
 function zParts(line) {
   const parts = String(line).split(',').map((s) => s.trim()).filter(Boolean);
-  if (parts.length < 2) return { code: String(line).trim(), rest: '' };
-  return { code: parts[parts.length - 1], rest: parts.slice(0, -1).join(', ') };
+  if (parts.length < 2) return { code: String(line).trim(), rest: '', street: '' };
+  // street — улица с номером (часть перед номером Жабки), для коротких строк очереди
+  return { code: parts[parts.length - 1], rest: parts.slice(0, -1).join(', '), street: parts[parts.length - 2] };
 }
 
 /**
@@ -1552,8 +1562,9 @@ const actions = {
     update(ui.day, (x) => {
       const plan = x.z || [];
       if (!on) { x.z = []; zCount(x, plan.length); return; }
-      const keep = new Map(plan.map((i) => [i.t, i]));
-      x.z = [...new Set([...zlist(), ...plan.map((i) => i.t)])].map((s) => keep.get(s) || { t: s, a: false, b: false });
+      // Уже выбранные остаются в своём порядке, остальные — в конец, по порядку списка
+      const have = new Set(plan.map((i) => i.t));
+      x.z = [...plan, ...zlist().filter((s) => !have.has(s)).map((s) => ({ t: s, a: false, b: false }))];
       zCount(x, plan.length);
     });
     render();
@@ -1562,10 +1573,8 @@ const actions = {
     const s = el.dataset.t, order = zlist();
     update(ui.day, (x) => {
       const plan = x.z || [];
-      const next = plan.some((i) => i.t === s) ? plan.filter((i) => i.t !== s) : [...plan, { t: s, a: false, b: false }];
-      // в порядке списка Жабок; то, чего в списке уже нет, — в конце
-      const pos = (i) => { const k = order.indexOf(i.t); return k < 0 ? 1e6 : k; };
-      x.z = next.sort((p, q) => pos(p) - pos(q));
+      // Порядок выбора = порядок работы: новая Жабка встаёт в конец очереди
+      x.z = plan.some((i) => i.t === s) ? plan.filter((i) => i.t !== s) : [...plan, { t: s, a: false, b: false }];
       zCount(x, plan.length);
     });
     render();
