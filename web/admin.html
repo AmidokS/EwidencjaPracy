@@ -81,6 +81,20 @@
     .manual[open] > * + * { margin-top: 10px; }
     .manual .btn { width: 100%; }
 
+    /* Кто сейчас в приложении */
+    .onl { width: 100%; display: flex; align-items: center; flex-wrap: wrap; gap: 4px 10px; padding: 10px 14px; border-radius: 16px; border: 0;
+           background: var(--card); color: var(--text); font-size: 15px; text-align: left; }
+    .onl.on { background: var(--pc); color: var(--on-pc); }
+    .onl-dot { width: 10px; height: 10px; border-radius: 50%; background: #22c55e; box-shadow: 0 0 0 4px color-mix(in srgb, #22c55e 25%, transparent); flex: none; }
+    .onl.none { color: var(--text2); }
+    .onl.none .onl-dot { background: var(--outline); box-shadow: none; }
+    .onl-names { flex-basis: 100%; padding-left: 20px; font-size: 13px; color: var(--text2); overflow-wrap: anywhere; }
+    .onl.on .onl-names { color: inherit; opacity: .85; }
+    .ava { position: relative; }
+    .ava-dot { position: absolute; right: -1px; bottom: -1px; width: 12px; height: 12px; border-radius: 50%; background: #22c55e; border: 2px solid var(--card); }
+    .on-txt { color: #16a34a; font-weight: 650; }
+    :root[data-dark="1"] .on-txt { color: #4ade80; }
+
     /* Кто на какой версии */
     .vlist { display: flex; flex-direction: column; gap: 8px; }
     .vrow { background: var(--card-hi); border-radius: 12px; padding: 8px 12px; }
@@ -125,7 +139,7 @@
       .list { background: var(--card); border-radius: 20px; gap: 0; overflow: hidden; }
       .thead, .person > .row {
         display: grid; align-items: center; gap: 14px;
-        grid-template-columns: 40px minmax(150px, 1.6fr) 80px minmax(140px, 1.3fr) 120px 130px 20px;
+        grid-template-columns: 40px minmax(150px, 1.6fr) 80px minmax(140px, 1.3fr) 140px 130px 20px;
       }
       .thead { padding: 12px 18px 10px; font-size: 12px; font-weight: 700; color: var(--text2); text-transform: uppercase; letter-spacing: .04em; border-bottom: 1px solid var(--outline-v); }
       .person { background: none; border-radius: 0; border-bottom: 1px solid var(--outline-v); }
@@ -283,8 +297,48 @@
     document.getElementById('pw').onkeydown = (e) => { if (e.key === 'Enter') go(); };
   }
 
+  /* ---------- Кто сейчас в приложении (обновляется каждые 20 секунд) ---------- */
+  let online = new Map(); // код → { online, at, since, platform, version }
+  async function loadOnline() {
+    try {
+      const r = await call('/admin/online');
+      const m = new Map();
+      for (const x of r.list || []) {
+        const cur = m.get(x.code);
+        if (!cur) { m.set(x.code, { ...x }); continue; }
+        // У владельца несколько устройств: в сети, если хоть одно в сети
+        if (x.online && (!cur.online || x.since < cur.since)) Object.assign(cur, { online: true, since: x.since, platform: x.platform, version: x.version });
+        cur.at = Math.max(cur.at, x.at);
+      }
+      online = m;
+    } catch (e) { /* нет связи — оставляем прежнее */ }
+  }
+  const pres = (it) => online.get(it.code);
+  const isOnline = (it) => !!(pres(it) && pres(it).online);
+  /** Последняя активность: что свежее — вход с интернетом или последняя отметка «в приложении». */
+  const lastAct = (it) => Math.max(it.lastSeen || 0, (pres(it) && pres(it).at) || 0) || null;
+  const dur = (ms) => {
+    const m = Math.floor(Math.max(0, Date.now() - ms) / 60000);
+    return m < 1 ? '&lt;1 мин' : m < 60 ? `${m} мин` : `${Math.floor(m / 60)} ч ${m % 60} мин`;
+  };
+  function onlineBarHtml() {
+    const on = items.filter(isOnline);
+    if (!on.length) return '<div class="onl none"><span class="onl-dot"></span>Сейчас в приложении никого</div>';
+    return `<button class="onl${filter === 'online' ? ' on' : ''}" data-f="online">
+      <span class="onl-dot"></span><span>Сейчас в приложении: <b>${on.length}</b></span>
+      <span class="onl-names">${on.map((it) => esc(it.name)).join(', ')}</span></button>`;
+  }
+  setInterval(async () => {
+    if (!pass || document.visibilityState !== 'visible' || tab !== 'people') return;
+    await loadOnline();
+    refreshPeople();
+  }, 20000);
+  document.addEventListener('visibilitychange', async () => {
+    if (pass && document.visibilityState === 'visible' && tab === 'people' && items.length) { await loadOnline(); refreshPeople(); }
+  });
+
   async function load() {
-    const [r] = await Promise.all([call('/admin/list'), loadSite()]);
+    const [r] = await Promise.all([call('/admin/list'), loadSite(), loadOnline()]);
     items = r.items || [];
     cfg = r.cfg || null;
     render();
@@ -313,9 +367,12 @@
     const c = esc(it.code);
     const open = openCode === it.code;
     const devs = it.devices || [];
-    const line = it.owner && devs.length
-      ? [`<b>${c}</b>`, `${devs.length} ${plural(devs.length, 'устройство', 'устройства', 'устройств')}`, seen(it.lastSeen)].join(' · ')
-      : [`<b>${c}</b>`, whereShort(it), it.device ? seen(it.lastSeen) : ''].filter(Boolean).join(' · ');
+    const p = pres(it), on = isOnline(it);
+    const act = on ? `<span class="on-txt">в сети · ${dur(p.since)}</span>` : seen(lastAct(it));
+    // «в сети» — сразу после кода, чтобы на узком экране не обрезалось
+    const middle = it.owner && devs.length ? `${devs.length} ${plural(devs.length, 'устройство', 'устройства', 'устройств')}` : whereShort(it);
+    const line = (on ? [`<b>${c}</b>`, act, middle] : [`<b>${c}</b>`, middle, it.device || devs.length ? act : ''])
+      .filter(Boolean).join(' · ');
     const flags = [
       isOld(it) ? '<span class="tag bad">Старая версия</span>' : '',
       tries.length ? `<span class="tag bad">Чужой телефон ×${tries.length}</span>` : '',
@@ -323,11 +380,11 @@
     ].filter(Boolean).join('');
     return `<div class="person${open ? ' open' : ''}" data-p="${c}">
       <button class="row" data-toggle="${c}" aria-expanded="${open}">
-        <span class="ava" style="--ah:${hue(it.name)}">${esc(initials(it.name))}</span>
+        <span class="ava" style="--ah:${hue(it.name)}">${esc(initials(it.name))}${on ? '<i class="ava-dot" title="в сети"></i>' : ''}</span>
         <span class="who"><span class="name">${esc(it.name)}</span><span class="line">${line}</span></span>
         <span class="c c-code">${c}</span>
         <span class="c c-dev">${it.owner && devs.length ? `${devs.length} ${plural(devs.length, 'устройство', 'устройства', 'устройств')}` : (whereShort(it) || '—')}${isOld(it) ? ' <span class="warn">⚠</span>' : ''}</span>
-        <span class="c c-seen">${it.device || devs.length ? seen(it.lastSeen) : '—'}</span>
+        <span class="c c-seen">${it.device || devs.length || on ? act : '—'}</span>
         ${status(it)}${CHEV}
       </button>
       ${flags ? `<div class="flags">${flags}</div>` : ''}
@@ -340,7 +397,10 @@
                 ? devs.map((d) => `${PLATFORM[d.platform] || esc(d.platform || '?')}${d.version ? ` ${esc(d.version)}` : ''} — ${seen(d.last)}`).join('<br>')
                 : 'нет — на всех устройствах нужно ввести код'}<br><span class="muted small">Твой код работает на любом количестве устройств. «Выйти на всех устройствах» — если потерял телефон или код мог кто-то узнать.</span></dd>`
             : `<dt>Телефон</dt><dd>${it.device ? `${where(it) || 'привязан'}${isOld(it) ? ' <span class="warn">— старая версия</span>' : ''}` : 'ещё не вводил код'}</dd>`}
-          <dt>Активность</dt><dd>${when(it.lastSeen)}${ago(it.lastSeen)}<br><span class="muted small">Обновляется, когда человек открывает приложение с интернетом (не чаще раза в 10 минут).</span></dd>
+          <dt>Сейчас</dt><dd>${on
+            ? `<span class="on-txt">в приложении с ${when(p.since).slice(11)}</span> (${dur(p.since)}${p.platform ? `, ${PLATFORM[p.platform] || esc(p.platform)} ${esc(p.version || '')}` : ''})`
+            : p ? `не в приложении · последний раз ${when(p.at)}${ago(p.at)}` : 'не в приложении'}</dd>
+          <dt>Активность</dt><dd>${when(lastAct(it))}${ago(lastAct(it))}<br><span class="muted small">«В сети» — приложение открыто на экране и есть интернет. Список обновляется сам каждые 20 секунд.</span></dd>
           <dt>Срок</dt><dd>${it.expires ? `до ${dateOnly(it.expires)}` : 'без срока'}</dd>
           <dt>Создан</dt><dd>${when(it.created)}</dd>
           ${it.activated ? `<dt>Активирован</dt><dd>${when(it.activated)}</dd>` : ''}
@@ -381,7 +441,8 @@
     ['idle', 'Не заходили 7+ дней', (it) => !isClosed(it) && !!it.device && (!it.lastSeen || Date.now() - it.lastSeen > WEEK)],
     ['tries', 'Вход с чужого телефона', (it) => (it.attempts || []).length > 0],
   ];
-  const filterFn = () => ([...TILES, ...PROBLEMS].find((f) => f[0] === filter) || TILES[0])[2];
+  const ONLINE_F = [['online', 'в сети', (it) => isOnline(it)]];
+  const filterFn = () => ([...TILES, ...PROBLEMS, ...ONLINE_F].find((f) => f[0] === filter) || TILES[0])[2];
 
   function tilesHtml() {
     return `<div class="stats">${TILES.map(([k, label, fn]) =>
@@ -403,6 +464,7 @@
     return head + shown.map(personHtml).join('');
   }
   function refreshPeople() {
+    const o = document.getElementById('onl'); if (o) o.innerHTML = onlineBarHtml();
     const t = document.getElementById('tiles'); if (t) t.innerHTML = tilesHtml();
     const c = document.getElementById('chips'); if (c) c.innerHTML = chipsHtml();
     const l = document.getElementById('list'); if (l) l.innerHTML = listHtml();
@@ -674,6 +736,7 @@
         <button role="tab" data-tab="settings" class="${tab === 'settings' ? 'on' : ''}" aria-selected="${tab === 'settings'}">Настройки</button>
       </div>
       ${tab === 'settings' ? `<div class="setgrid">${settingsHtml()}</div>` : `
+        <div id="onl">${onlineBarHtml()}</div>
         <div id="tiles">${tilesHtml()}</div>
         <div class="tools">
           <input class="field" id="search" type="search" placeholder="Поиск" value="${esc(query)}" aria-label="Поиск">

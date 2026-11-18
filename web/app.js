@@ -2,7 +2,7 @@
 /* Учёт работы — PWA. Создатель: Artur Alimhulov.
    Все данные хранятся только на телефоне (localStorage). */
 
-const VERSION = '2.7';
+const VERSION = '2.8';
 const STORE_KEY = 'uchet-raboty-v1';
 
 /* ==== calc:begin ====
@@ -514,6 +514,19 @@ async function checkAccess(force) {
     }
   } catch (e) { /* нет интернета — работаем как обычно */ }
 }
+
+/* «Я в приложении»: пока приложение открыто на экране — отметка раз в минуту, при сворачивании — «вышел».
+   По этим отметкам владелец видит на странице управления, кто сейчас в сети.
+   text/plain — чтобы браузер не делал лишний предварительный запрос (CORS). */
+const PING_EVERY = 60 * 1000;
+function presence(on) {
+  if (!AUTH_API || !S.auth.ok || !S.auth.code) return;
+  const data = JSON.stringify({ code: S.auth.code, device: deviceId(), platform: platform(), version: VERSION, off: !on, t: Date.now() });
+  // При сворачивании страница может сразу уснуть — sendBeacon всё равно доставит
+  if (!on && navigator.sendBeacon && navigator.sendBeacon(AUTH_API + '/ping', new Blob([data], { type: 'text/plain' }))) return;
+  fetch(AUTH_API + '/ping', { method: 'POST', body: data, headers: { 'Content-Type': 'text/plain' }, keepalive: true, cache: 'no-store' }).catch(() => {});
+}
+setInterval(() => { if (document.visibilityState === 'visible') presence(true); }, PING_EVERY);
 
 /** Запомнить ответ сервера: имя, срок кода, общие настройки (объявление, лимит без интернета). */
 function acceptServer(r) {
@@ -1326,6 +1339,7 @@ const actions = {
         render();
         toast(`${t('Добро пожаловать', 'Witaj')}${r.name ? `, ${r.name}` : ''}!`);
         syncNow(); // владелец на новом устройстве сразу получит свои записи
+        presence(true);
         return;
       }
       err.textContent = authMessage((r && r.reason) || 'invalid');
@@ -1431,7 +1445,8 @@ function onTime(el) {
 /* ===================== Запуск ===================== */
 darkMq.addEventListener('change', () => { if (S.settings.theme === 'system') applyTheme(); });
 document.addEventListener('visibilitychange', () => {
-  if (document.visibilityState === 'visible') { renderTop(); checkAccess(); if (offlineLocked()) renderSheet(); syncNow(); }
+  if (document.visibilityState === 'visible') { renderTop(); checkAccess(); if (offlineLocked()) renderSheet(); syncNow(); presence(true); }
+  if (document.visibilityState === 'hidden') presence(false);
   // Уходим из приложения — сразу отправляем неотправленное (только владелец)
   if (document.visibilityState === 'hidden' && (Object.keys(S.sync.dirty).length || Object.keys(S.sync.paidDirty).length || S.sync.metaDirty)) syncNow();
 });
@@ -1470,3 +1485,4 @@ if (S.cloud.on && AUTH_API && S.auth.code) {
 
 render(true);
 checkAccess(true);
+presence(true);
