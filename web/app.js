@@ -2,7 +2,7 @@
 /* Учёт работы — PWA. Создатель: Artur Alimhulov.
    Данные хранятся на телефоне (localStorage) и копией на сервере под кодом доступа (см. «Записи на сервере»). */
 
-const VERSION = '3.2';
+const VERSION = '3.3';
 const STORE_KEY = 'uchet-raboty-v1';
 
 /* ==== calc:begin ====
@@ -465,6 +465,15 @@ function zParts(line) {
   const parts = String(line).split(',').map((s) => s.trim()).filter(Boolean);
   if (parts.length < 2) return { code: String(line).trim(), rest: '' };
   return { code: parts[parts.length - 1], rest: parts.slice(0, -1).join(', ') };
+}
+
+/**
+ * Число Жабок за день следует за выбором — но только если оно и так совпадало с числом выбранных
+ * (например, 0 и ничего не выбрано на будущий день). Записанное вручную (прошлые дни без списка,
+ * или поправленное −/+) выбор никогда не трогает — так старые Жабки не пропадут.
+ */
+function zCount(x, oldLen) {
+  if ((x.machines || 0) === oldLen) x.machines = (x.z || []).length;
 }
 
 /** Отметить отчёт по Жабке отправленным (или снять отметку). */
@@ -1542,9 +1551,10 @@ const actions = {
     const on = el.dataset.on === '1';
     update(ui.day, (x) => {
       const plan = x.z || [];
-      if (!on) { x.z = []; return; }
+      if (!on) { x.z = []; zCount(x, plan.length); return; }
       const keep = new Map(plan.map((i) => [i.t, i]));
       x.z = [...new Set([...zlist(), ...plan.map((i) => i.t)])].map((s) => keep.get(s) || { t: s, a: false, b: false });
+      zCount(x, plan.length);
     });
     render();
   },
@@ -1556,6 +1566,7 @@ const actions = {
       // в порядке списка Жабок; то, чего в списке уже нет, — в конце
       const pos = (i) => { const k = order.indexOf(i.t); return k < 0 ? 1e6 : k; };
       x.z = next.sort((p, q) => pos(p) - pos(q));
+      zCount(x, plan.length);
     });
     render();
   },
