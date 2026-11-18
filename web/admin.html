@@ -89,6 +89,12 @@
     .rec-table td.n { text-align: right; white-space: nowrap; font-variant-numeric: tabular-nums; }
     .rec-table td.rnote { color: var(--text2); overflow-wrap: anywhere; }
     .rec-meta { font-size: 13px; color: var(--text2); white-space: pre-wrap; }
+    .rec-table tbody tr { cursor: pointer; }
+    .rec-table tbody tr:hover td { background: var(--card-hi); }
+    .rec-edit { display: flex; flex-direction: column; gap: 8px; }
+    .re-step { display: flex; gap: 6px; }
+    .re-step .field { text-align: center; min-width: 0; }
+    .re-step button { flex: none; width: 44px; border: 0; border-radius: 12px; background: var(--sc); color: var(--on-sc); font-size: 20px; font-weight: 700; }
     .empty { text-align: center; padding: 28px 12px; color: var(--text2); background: var(--card); border-radius: 18px; }
 
     /* Настройки */
@@ -278,7 +284,7 @@
     `Твой личный код доступа: ${it.code}\n\n` +
     `На iPhone: открой ссылку в Safari → ••• → «Поделиться» → «На экран „Домой“».\n` +
     `На Android: установи файл EwidencjaPracy.apk, который я пришлю отдельно (или открой ссылку в Chrome → ⋮ → «Установить приложение»).\n` +
-    `Код работает только на одном телефоне — никому его не передавай.`;
+    `Не передавай код посторонним: по нему видны и меняются твои записи.`;
 
   async function call(path, method = 'GET', data) {
     const res = await fetch(API + path, {
@@ -390,11 +396,12 @@
     const tries = it.attempts || [];
     const c = esc(it.code);
     const open = openCode === it.code;
-    const devs = it.devices || [];
+    // Устройства, где сейчас введён код (у старых записей — один телефон без списка)
+    const devs = (it.devices || []).length ? it.devices : it.device && it.platform ? [{ platform: it.platform, version: it.version, last: it.lastSeen }] : [];
     const p = pres(it), on = isOnline(it);
     const act = on ? `<span class="on-txt">в сети · ${dur(p.since)}</span>` : seen(lastAct(it));
     // «в сети» — сразу после кода, чтобы на узком экране не обрезалось
-    const middle = it.owner && devs.length ? `${devs.length} ${plural(devs.length, 'устройство', 'устройства', 'устройств')}` : whereShort(it);
+    const middle = devs.length > 1 ? `${devs.length} ${plural(devs.length, 'устройство', 'устройства', 'устройств')}` : whereShort(it);
     const line = (on ? [`<b>${c}</b>`, act, middle] : [`<b>${c}</b>`, middle, it.device || devs.length ? act : ''])
       .filter(Boolean).join(' · ');
     const flags = [
@@ -407,7 +414,7 @@
         <span class="ava" style="--ah:${hue(it.name)}">${esc(initials(it.name))}${on ? '<i class="ava-dot" title="в сети"></i>' : ''}</span>
         <span class="who"><span class="name">${esc(it.name)}</span><span class="line">${line}</span></span>
         <span class="c c-code">${c}</span>
-        <span class="c c-dev">${it.owner && devs.length ? `${devs.length} ${plural(devs.length, 'устройство', 'устройства', 'устройств')}` : (whereShort(it) || '—')}${isOld(it) ? ' <span class="warn">⚠</span>' : ''}</span>
+        <span class="c c-dev">${devs.length > 1 ? `${devs.length} ${plural(devs.length, 'устройство', 'устройства', 'устройств')}` : (whereShort(it) || '—')}${isOld(it) ? ' <span class="warn">⚠</span>' : ''}</span>
         <span class="c c-seen">${it.device || devs.length || on ? act : '—'}</span>
         ${status(it)}${CHEV}
       </button>
@@ -416,11 +423,9 @@
         <div class="info">
         ${it.note ? `<div class="note">${esc(it.note)}</div>` : ''}
         <dl class="facts">
-          ${it.owner
-            ? `<dt>Устройства</dt><dd>${devs.length
-                ? devs.map((d) => `${PLATFORM[d.platform] || esc(d.platform || '?')}${d.version ? ` ${esc(d.version)}` : ''} — ${seen(d.last)}`).join('<br>')
-                : 'нет — на всех устройствах нужно ввести код'}<br><span class="muted small">Твой код работает на любом количестве устройств. «Выйти на всех устройствах» — если потерял телефон или код мог кто-то узнать.</span></dd>`
-            : `<dt>Телефон</dt><dd>${it.device ? `${where(it) || 'привязан'}${isOld(it) ? ' <span class="warn">— старая версия</span>' : ''}` : 'ещё не вводил код'}</dd>`}
+          <dt>Устройства</dt><dd>${devs.length
+            ? devs.map((d) => `${PLATFORM[d.platform] || esc(d.platform || '?')}${d.version ? ` ${esc(d.version)}` : ''} — ${seen(d.last)}`).join('<br>')
+            : it.activated ? 'ни на одном — вышел или все устройства отключены' : 'ещё не вводил код'}${isOld(it) ? ' <span class="warn">— старая версия</span>' : ''}<br><span class="muted small">Код работает на любом устройстве: можно зайти под кодом коллеги, поправить его записи и выйти. «Выйти на всех устройствах» — если потерял телефон или код мог кто-то узнать.</span></dd>
           <dt>Сейчас</dt><dd>${on
             ? `<span class="on-txt">в приложении с ${when(p.since).slice(11)}</span> (${dur(p.since)}${p.platform ? `, ${PLATFORM[p.platform] || esc(p.platform)} ${esc(p.version || '')}` : ''})`
             : p ? `не в приложении · последний раз ${when(p.at)}${ago(p.at)}` : 'не в приложении'}</dd>
@@ -438,7 +443,7 @@
           <button data-a="note" data-c="${c}">${it.note ? 'Изменить заметку' : 'Добавить заметку'}</button>
           ${it.owner ? '' : `<button data-a="expires" data-c="${c}">Срок действия</button>`}
           <button data-a="regen" data-c="${c}">Сменить код</button>
-          ${it.device || devs.length ? `<button data-a="unbind" data-c="${c}">${it.owner ? 'Выйти на всех устройствах' : 'Отвязать телефон'}</button>` : ''}
+          ${it.device || devs.length ? `<button data-a="unbind" data-c="${c}">Выйти на всех устройствах</button>` : ''}
           ${it.owner ? '' : (it.active
             ? `<button class="danger" data-a="disable" data-c="${c}">Отключить</button>`
             : `<button data-a="enable" data-c="${c}">Включить</button>`)}
@@ -557,8 +562,8 @@
           <dt>Отключить</dt><dd>Закрыть доступ. Сработает при следующем запуске приложения с интернетом.</dd>
           <dt>Срок действия</dt><dd>Код сам перестанет работать после выбранной даты.</dd>
           <dt>Сменить код</dt><dd>Старый код сразу перестаёт работать, человек получает новый. Записи на сервере переезжают на новый код.</dd>
-          <dt>Отвязать телефон</dt><dd>Если человек сменил телефон: он вводит тот же код на новом. Код работает только на одном телефоне — кроме твоего кода владельца, он работает везде.</dd>
-          <dt>Записи</dt><dd>Посмотреть записи человека: дни, итоги и выплата по половинам месяца, что пришло на счёт. Только просмотр.</dd>
+          <dt>Выйти на всех устройствах</dt><dd>Если человек потерял телефон или код мог кто-то узнать: все устройства с этим кодом попросят ввести его заново. Код работает на любом устройстве — в приложении есть «Выйти», чтобы зайти под кодом коллеги.</dd>
+          <dt>Записи</dt><dd>Записи человека: дни, итоги и выплата по половинам месяца, что пришло на счёт. Нажми на день, чтобы исправить — например, добавить Жабку, которую сделали вместо него. Правка придёт ему при следующей синхронизации.</dd>
           <dt>Удалить</dt><dd>Код исчезает из списка навсегда вместе с записями на сервере.</dd>
           <dt>Сообщить всем об обновлении</dt><dd>Появляется, когда на сайт выложен новый APK. У людей с APK при запуске появится кнопка «Обновить».</dd>
         </dl>
@@ -625,7 +630,7 @@
     let none = 0;
     for (const it of items) {
       if (isClosed(it)) continue;
-      const devs = it.owner && (it.devices || []).length ? it.devices
+      const devs = (it.devices || []).length ? it.devices
         : it.device && it.platform ? [{ platform: it.platform, version: it.version }] : [];
       if (!devs.length) { none++; continue; }
       for (const d of devs) {
@@ -673,8 +678,8 @@
   const rt = (v) => new Intl.NumberFormat('ru-RU', { minimumFractionDigits: 2, maximumFractionDigits: 2 }).format(v);
   const hm = (m) => `${Math.floor(m / 60)}:${p2(m % 60)}`;
 
-  async function openRecords(it) {
-    openSheet({ kind: 'records', item: it, loading: true });
+  async function openRecords(it, keepMonth) {
+    if (!keepMonth) openSheet({ kind: 'records', item: it, loading: true });
     try {
       const [r, C] = await Promise.all([call(`/admin/records?code=${encodeURIComponent(it.code)}`), calcLib()]);
       const entries = {};
@@ -690,7 +695,7 @@
       const last = keys.length ? keys[keys.length - 1] : isoDate(Date.now());
       const [y, m] = last.split('-').map(Number);
       const months = [...new Set(keys.map((k) => k.slice(0, 7)))];
-      sheet = { kind: 'records', item: it, C, entries, rates, zabka, paid: r.paid || {}, header: meta.header || '', at: r.at, month: y * 12 + m - 1, months };
+      sheet = { kind: 'records', item: it, C, entries, rates, zabka, paid: r.paid || {}, header: meta.header || '', at: r.at, month: keepMonth ?? y * 12 + m - 1, months };
     } catch (e) {
       sheet = { kind: 'records', item: it, error: e.message === 'no_records' ? 'Записи на сервере ещё не включены.' : 'Не удалось загрузить записи.' };
     }
@@ -732,13 +737,14 @@
       const k = `${y}-${p2(m)}-${p2(d)}`, x = s.entries[k];
       if (!x) continue;
       const wd = WD[new Date(y, m - 1, d).getDay()];
-      rows.push(`<tr><td>${p2(d)}.${p2(m)} ${wd}</td><td class="n">${x.points || '—'}</td>${s.zabka ? `<td class="n">${x.machines || '—'}</td>` : ''}
+      rows.push(`<tr data-rd="${k}" title="Нажми, чтобы исправить"><td>${p2(d)}.${p2(m)} ${wd}</td><td class="n">${x.points || '—'}</td>${s.zabka ? `<td class="n">${x.machines || '—'}</td>` : ''}
         <td class="n">${C.worked(x) ? hm(C.worked(x)) : '—'}</td><td class="rnote">${esc(x.note || '')}</td></tr>`);
     }
+    if (s.edit) return `${head}${editDayHtml(s)}`;
     const ym = `${y}-${p2(m)}`;
     const prevM = s.months.filter((k) => k < ym).pop(), nextM = s.months.find((k) => k > ym);
     return `${head}
-      <p class="muted small" style="margin:0">${s.at ? `Последняя синхронизация: ${when(s.at)}` : 'С этого кода ещё ни разу не синхронизировались — записи появятся, когда человек откроет новую версию приложения с интернетом.'} Только просмотр.</p>
+      <p class="muted small" style="margin:0">${s.at ? `Последняя синхронизация: ${when(s.at)}.` : 'С этого кода ещё ни разу не синхронизировались — записи появятся, когда человек откроет новую версию приложения с интернетом.'} Нажми на день, чтобы исправить.</p>
       <div class="rec-nav">
         <button data-rm="${prevM || ''}" ${prevM ? '' : 'disabled'} aria-label="Предыдущий месяц с записями">‹</button>
         <b>${MONTHS[m - 1]} ${y}</b>
@@ -747,9 +753,90 @@
       <div class="rec-halves">${halves.map(halfHtml).join('')}</div>
       ${rows.length ? `<table class="rec-table"><thead><tr><th>Дата</th><th style="text-align:right">Точки</th>${s.zabka ? '<th style="text-align:right">Жабка</th>' : ''}<th style="text-align:right">Часы</th><th>Заметка</th></tr></thead>
         <tbody>${rows.join('')}</tbody></table>` : '<p class="muted">В этом месяце записей нет.</p>'}
+      <button class="btn tonal" data-re="new">+ Добавить или исправить день</button>
       ${s.header ? `<div><label class="lbl">Шапка отчёта</label><div class="rec-meta">${esc(s.header)}</div></div>` : ''}
       <p class="muted small" style="margin:0">Ставки: ${rt(s.rates.point)} zł за точку${s.zabka ? `, ${rt(s.rates.machine)} zł за автомат Жабки` : ' · Жабка выключена'}${s.months.length ? ` · месяцев с записями: ${s.months.length}` : ''}</p>`;
   }
+
+  /* ---------- Исправить день у человека ---------- */
+  const clockOf = (v) => (v == null ? '' : `${p2(Math.floor(v / 60))}:${p2(v % 60)}`);
+  const minsOf = (v) => { if (!v) return null; const [h, mm] = v.split(':').map(Number); return Number.isFinite(h) && Number.isFinite(mm) ? h * 60 + mm : null; };
+
+  function editDayHtml(s) {
+    const e = s.edit, x = s.entries[e.date] || {};
+    const [ey, em, ed] = e.date.split('-');
+    return `<div class="rec-edit">
+      <h3 style="margin:0">${x.points != null ? 'Исправить день' : 'Добавить день'} · ${ed}.${em}.${ey}</h3>
+      <label class="lbl" for="re-date">Дата</label>
+      <input class="field" id="re-date" type="date" value="${e.date}">
+      <div class="two">
+        <div><label class="lbl" for="re-p">Точки</label><input class="field" id="re-p" inputmode="numeric" value="${x.points || ''}" placeholder="0"></div>
+        <div><label class="lbl" for="re-m">Жабка</label>
+          <div class="re-step"><button data-re="m-" aria-label="Меньше">−</button><input class="field" id="re-m" inputmode="numeric" value="${x.machines || ''}" placeholder="0"><button data-re="m+" aria-label="Больше">+</button></div></div>
+      </div>
+      <div class="two">
+        <div><label class="lbl" for="re-s">Начало</label><input class="field" id="re-s" type="time" value="${clockOf(x.start)}"></div>
+        <div><label class="lbl" for="re-e">Конец</label><input class="field" id="re-e" type="time" value="${clockOf(x.end)}"></div>
+      </div>
+      <label class="lbl" for="re-n">Заметка</label>
+      <textarea class="field" id="re-n" rows="2" maxlength="2000">${esc(x.note || '')}</textarea>
+      ${s.zabka ? '' : '<p class="muted small" style="margin:0">У человека раздел Жабки выключен — если добавишь Жабку, он включится, иначе он её не увидит.</p>'}
+      <p class="muted small" style="margin:0">Правка придёт на телефон человека при следующем открытии приложения с интернетом. Если он в это же время меняет этот же день у себя, останется более позднее изменение.</p>
+      <p class="err" id="re-err"></p>
+      <div class="btn-row">
+        <button class="btn tonal" data-re="cancel">Отмена</button>
+        <button class="btn primary" data-re="save">Сохранить</button>
+      </div>
+      ${s.entries[e.date] ? '<button class="link" data-re="clear" style="color:var(--error)">Очистить этот день</button>' : ''}
+    </div>`;
+  }
+
+  /** Обработать кнопки формы правки. true — нажатие было здесь. */
+  async function onEditClick(b) {
+    const s = sheet, act = b.dataset.re;
+    if (act === 'new') {
+      const today = isoDate(Date.now());
+      const y = Math.floor(s.month / 12), mo = s.month % 12 + 1;
+      s.edit = { date: today.startsWith(`${y}-${p2(mo)}`) ? today : `${y}-${p2(mo)}-01` };
+      openSheet(s);
+      return;
+    }
+    if (act === 'cancel') { s.edit = null; openSheet(s); return; }
+    if (act === 'm-' || act === 'm+') {
+      const inp = document.getElementById('re-m');
+      inp.value = String(Math.max(0, (parseInt(inp.value, 10) || 0) + (act === 'm+' ? 1 : -1)) || '');
+      return;
+    }
+    const err = document.getElementById('re-err');
+    const date = document.getElementById('re-date').value;
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) { err.textContent = 'Выбери дату'; return; }
+    let day;
+    if (act === 'clear') {
+      if (!await dialog({ title: 'Очистить день?', text: `У «${s.item.name}» за ${date.split('-').reverse().join('.')} не останется ни точек, ни Жабки, ни часов, ни заметки.`, ok: 'Очистить', danger: true })) return;
+      day = { p: 0, m: 0, s: null, e: null, n: '' };
+    } else {
+      const int = (id) => { const v = document.getElementById(id).value.trim(); return v === '' ? 0 : /^\d+$/.test(v) ? Number(v) : NaN; };
+      day = { p: int('re-p'), m: int('re-m'), s: minsOf(document.getElementById('re-s').value), e: minsOf(document.getElementById('re-e').value), n: document.getElementById('re-n').value.trim() };
+      if (!Number.isFinite(day.p) || !Number.isFinite(day.m)) { err.textContent = 'Точки и Жабка — целые числа'; return; }
+    }
+    b.disabled = true;
+    try {
+      await call('/admin/records/day', 'POST', { code: s.item.code, date, day, zabkaOn: day.m > 0 && !s.zabka });
+      const [y, mo] = date.split('-').map(Number);
+      await openRecords(s.item, y * 12 + mo - 1);
+      toast(act === 'clear' ? 'День очищен' : 'Сохранено — придёт человеку при следующей синхронизации');
+    } catch (e) {
+      b.disabled = false;
+      err.textContent = 'Не получилось сохранить';
+    }
+  }
+
+  // Выбрали другую дату в форме — подставляем, что уже записано в этот день
+  document.addEventListener('change', (ev) => {
+    if (ev.target.id !== 're-date' || !sheet || !sheet.edit || !/^\d{4}-\d{2}-\d{2}$/.test(ev.target.value)) return;
+    sheet.edit.date = ev.target.value;
+    openSheet(sheet);
+  });
 
   function sheetHtml() {
     if (!sheet) return '';
@@ -907,6 +994,10 @@
     const close = ev.target.closest('[data-close]');
     if (close && (close !== ev.target.closest('.sheet-bg') || ev.target === close)) { openSheet(null); return; }
     if (ev.target.closest('#new')) { openSheet({ kind: 'new' }); return; }
+    const re = ev.target.closest('[data-re]');
+    if (re && sheet && sheet.kind === 'records') { onEditClick(re); return; }
+    const rd = ev.target.closest('[data-rd]');
+    if (rd && sheet && sheet.kind === 'records' && !sheet.edit) { sheet.edit = { date: rd.dataset.rd }; openSheet(sheet); return; }
     const rm = ev.target.closest('[data-rm]');
     if (rm && sheet && sheet.kind === 'records' && rm.dataset.rm) {
       const [ry, rmo] = rm.dataset.rm.split('-').map(Number);
@@ -1026,9 +1117,7 @@
     const ask = {
       disable: { title: 'Отключить доступ?', text: `«${it.name}» не сможет пользоваться приложением. Сработает при следующем запуске с интернетом. Включить обратно можно в любой момент.`, ok: 'Отключить', danger: true },
       delete: { title: 'Удалить код?', text: `Код «${it.name}» удалится навсегда вместе с его записями на сервере, человек потеряет доступ к приложению. Записи на его телефоне останутся. Отменить это нельзя.`, ok: 'Удалить', danger: true },
-      unbind: it.owner
-        ? { title: 'Выйти на всех устройствах?', text: 'Приложение на каждом твоём устройстве попросит ввести код заново. Записи на устройствах останутся.', ok: 'Выйти везде' }
-        : { title: 'Отвязать телефон?', text: `Старый телефон «${it.name}» потеряет доступ, а код можно будет ввести на новом.`, ok: 'Отвязать' },
+      unbind: { title: 'Выйти на всех устройствах?', text: `Приложение на всех устройствах с кодом «${it.name}» попросит ввести код заново. Записи на сервере останутся.`, ok: 'Выйти везде' },
     }[action];
     if (ask && !await dialog(ask)) return;
     try {

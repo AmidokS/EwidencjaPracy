@@ -2,7 +2,7 @@
 /* Учёт работы — PWA. Создатель: Artur Alimhulov.
    Данные хранятся на телефоне (localStorage) и копией на сервере под кодом доступа (см. «Записи на сервере»). */
 
-const VERSION = '2.9';
+const VERSION = '3.0';
 const STORE_KEY = 'uchet-raboty-v1';
 
 /* ==== calc:begin ====
@@ -487,6 +487,7 @@ function authMessage(reason) {
     case 'unbound': return t('Код отвязан от этого телефона. Введи код ещё раз.', 'Kod został odłączony od tego telefonu. Wpisz kod ponownie.');
     case 'revoked': return t('Твой код больше не действует. Введи новый код.', 'Twój kod już nie działa. Wpisz nowy kod.');
     case 'expired': return t('Срок действия кода закончился.', 'Kod stracił ważność.');
+    case 'logged_out': return t('Ты вышел. Введи свой код или код коллеги.', 'Wylogowano. Wpisz swój kod lub kod kolegi.');
     case 'too_many': return t('Слишком много неверных попыток. Попробуй через час.', 'Zbyt wiele błędnych prób. Spróbuj za godzinę.');
     case 'network': return t('Нет связи с сервером. Проверь интернет и попробуй ещё раз.', 'Brak połączenia z serwerem. Sprawdź internet i spróbuj ponownie.');
     case 'empty': return t('Введи код доступа.', 'Wpisz kod dostępu.');
@@ -674,6 +675,26 @@ async function switchData(code) {
   S.sync = { ...JSON.parse(JSON.stringify(DEFAULTS.sync)), dataCode: code };
   syncedOnce = false;
   save();
+}
+
+/**
+ * «Выйти»: например, чтобы зайти под кодом коллеги и добавить ему Жабку, а потом вернуться к себе.
+ * Сначала всё неотправленное уходит на сервер (без интернета выйти нельзя — иначе записи могут потеряться),
+ * потом записи убираются с устройства: они на сервере и вернутся, когда снова введёшь свой код.
+ */
+async function logout() {
+  if (!(await syncNow())) return false;
+  presence(false);
+  try { await api('/logout', { code: S.auth.code, device: deviceId() }); } catch (e) { /* не страшно: устройство само отвалится при «Выйти на всех» */ }
+  S.entries = {};
+  S.paid = {};
+  S.settings.header = '';
+  S.settings.zabka = false;
+  S.sync = JSON.parse(JSON.stringify(DEFAULTS.sync));
+  S.auth = { ...S.auth, ok: false, code: '', name: '', owner: false, expires: null, reason: 'logged_out' };
+  syncedOnce = false;
+  save();
+  return true;
 }
 
 /* Без связи с сервером дольше, чем разрешил владелец, — просим подключиться к интернету */
@@ -1084,7 +1105,10 @@ function renderSettings() {
         : t('Записи, ставки и шапка отчёта хранятся копией на сервере под твоим кодом. Сменишь телефон — введи код на новом, и всё будет на месте.',
           'Wpisy, stawki i nagłówek są w kopii na serwerze pod Twoim kodem. Zmienisz telefon — wpisz kod na nowym i wszystko będzie na miejscu.')}</p>
        <p class="muted small">${t('Последняя синхронизация', 'Ostatnia synchronizacja')}: ${S.sync.at ? fullDate(S.sync.at) : '—'}${hasPendingSync() ? ` · ${t('есть неотправленное', 'są niewysłane zmiany')}` : ''}</p>
-       <button class="btn tonal" data-act="sync-now">${ic('sync', 18)} ${t('Синхронизировать сейчас', 'Synchronizuj teraz')}</button>`) : ''}
+       <button class="btn tonal" data-act="sync-now">${ic('sync', 18)} ${t('Синхронизировать сейчас', 'Synchronizuj teraz')}</button>
+       <p class="muted small" style="margin:0">${t('Нужно зайти под кодом коллеги (например, добавить ему Жабку)? Выйди и введи его код. Потом выйди и введи свой — твои записи вернутся.',
+         'Musisz wejść na kod kolegi (np. dopisać mu Żabkę)? Wyloguj się i wpisz jego kod. Potem wyloguj się i wpisz swój — Twoje wpisy wrócą.')}</p>
+       <button class="btn tonal" data-act="logout">${ic('back', 18)} ${t('Выйти', 'Wyloguj')} · ${esc(prettyCode(S.auth.code))}${S.auth.name ? ` (${esc(S.auth.name)})` : ''}</button>`) : ''}
     </div>
     <div class="footer">
       <div class="c1">${t('Создатель', 'Twórca')}</div>
@@ -1412,6 +1436,19 @@ const actions = {
     const ok = await syncNow();
     toast(ok ? t('Синхронизировано', 'Zsynchronizowano') : t('Нет связи с сервером', 'Brak połączenia z serwerem'));
     render();
+  },
+  async logout(el) {
+    if (!confirm(t(`Выйти из кода ${prettyCode(S.auth.code)}? Записи останутся на сервере — введёшь код снова, и они вернутся.`,
+      `Wylogować się z kodu ${prettyCode(S.auth.code)}? Wpisy zostaną na serwerze — po ponownym wpisaniu kodu wrócą.`))) return;
+    el.disabled = true;
+    if (!(await logout())) {
+      el.disabled = false;
+      toast(t('Нет связи с сервером — выйти можно только с интернетом, чтобы записи не потерялись', 'Brak połączenia — wylogować można tylko z internetem, żeby wpisy nie zginęły'));
+      return;
+    }
+    ui.tab = 0; ui.day = todayDay();
+    $sheet.innerHTML = '';
+    render(true);
   },
   async 'offline-retry'(el) {
     el.disabled = true;
