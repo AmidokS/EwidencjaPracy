@@ -2,7 +2,7 @@
 /* Учёт работы — PWA. Создатель: Artur Alimhulov.
    Данные хранятся на телефоне (localStorage) и копией на сервере под кодом доступа (см. «Записи на сервере»). */
 
-const VERSION = '3.4';
+const VERSION = '3.5';
 const STORE_KEY = 'uchet-raboty-v1';
 
 /* ==== calc:begin ====
@@ -142,6 +142,22 @@ const dayMoney = (x) => x.points * S.rates.point + (Z() ? x.machines * S.rates.m
 
 const sameEntry = (a, b) => a.points === b.points && a.machines === b.machines && a.start === b.start && a.end === b.end && (a.note || '') === (b.note || '') && sameZ(a.z, b.z);
 
+/* Слияние по полям: у каждого поля дня своё время изменения fu (p — точки, m — Жабки, s/e — начало/конец,
+   n — заметка, z — план Жабок). Правки одного дня с двух устройств не перетирают друг друга. */
+const FMAP = [['points', 'p'], ['machines', 'm'], ['start', 's'], ['end', 'e'], ['note', 'n'], ['z', 'z']];
+const FEMPTY = { points: 0, machines: 0, start: null, end: null, note: '', z: [] };
+const sameField = (k, a, b) => (k === 'z' ? sameZ(a, b) : k === 'note' ? (a || '') === (b || '') : (a ?? null) === (b ?? null));
+/** Время изменения каждого поля записи. Старые записи: у всего дня одно время u; плана Жабок нет — 0. */
+function fuOf(x) {
+  const t = {};
+  for (const [k, f] of FMAP) {
+    if (x.fu && x.fu[f] != null) t[f] = x.fu[f];
+    else if (k === 'z' && !(x.z && x.z.length)) t[f] = 0;
+    else t[f] = x.u || 0;
+  }
+  return t;
+}
+
 function update(e, fn) {
   const k = iso(e);
   const before = entry(e);
@@ -149,14 +165,13 @@ function update(e, fn) {
   fn(x);
   if (sameEntry(x, before)) return;
   const now = Date.now();
-  if (isEmptyEntry(x)) {
-    delete S.entries[k];
-    S.sync.deleted[k] = now;
-  } else {
-    x.u = now; // когда изменено — чтобы при синхронизации победило более позднее
-    S.entries[k] = x;
-    delete S.sync.deleted[k];
-  }
+  // Время ставим только тем полям, которые поменялись. Пустой день не удаляем — так помнятся времена полей.
+  const fu = fuOf(before);
+  for (const [key, f] of FMAP) if (!sameField(key, x[key], before[key])) fu[f] = now;
+  x.fu = fu;
+  x.u = now;
+  S.entries[k] = x;
+  delete S.sync.deleted[k];
   S.sync.dirty[k] = 1;
   syncSoon();
   save();
@@ -698,7 +713,9 @@ function presence(on) {
   if (!on && navigator.sendBeacon && navigator.sendBeacon(AUTH_API + '/ping', new Blob([data], { type: 'text/plain' }))) return;
   fetch(AUTH_API + '/ping', { method: 'POST', body: data, headers: { 'Content-Type': 'text/plain' }, keepalive: true, cache: 'no-store' }).catch(() => {});
 }
-setInterval(() => { if (document.visibilityState === 'visible') presence(true); }, PING_EVERY);
+// Пока приложение открыто — раз в минуту «я в приложении» и подтянуть изменения
+// (правки коллеги под твоим кодом или из админки появятся без переоткрытия приложения)
+setInterval(() => { if (document.visibilityState === 'visible') { presence(true); syncNow(); } }, PING_EVERY);
 
 /** Запомнить ответ сервера: имя, срок кода, общие настройки (объявление, лимит без интернета). */
 function acceptServer(r) {
@@ -738,8 +755,14 @@ async function syncNow(force) {
   const days = {};
   for (const k of keys) {
     const x = S.entries[k];
-    if (x) days[k] = { p: x.points || 0, m: x.machines || 0, s: x.start ?? null, e: x.end ?? null, n: x.note || '', z: x.z || [], u: x.u || 1 };
-    else if (z.deleted[k]) days[k] = { del: 1, u: z.deleted[k] };
+    if (x) {
+      const t = fuOf(x), fu = {};
+      for (const [, f] of FMAP) if (t[f] > 0) fu[f] = t[f];
+      const d = { p: x.points || 0, m: x.machines || 0, s: x.start ?? null, e: x.end ?? null, n: x.note || '', u: x.u || 1, fu };
+      // Плана Жабок здесь никогда не было (время 0) — не отправляем, чтобы не стереть план с другого устройства
+      if (t.z > 0) d.z = x.z || [];
+      days[k] = d;
+    } else if (z.deleted[k]) days[k] = { del: 1, u: z.deleted[k] };
   }
   const sendMeta = all || z.metaDirty;
   const meta = sendMeta ? { rates: S.rates, header: S.settings.header || '', zabka: !!S.settings.zabka, zlist: S.settings.zlist || [], u: z.metaU || 1 } : null;
@@ -759,18 +782,26 @@ async function syncNow(force) {
     if (!r || !r.ok) { syncError = (r && r.reason) || 'error'; throw new Error('sync'); }
     let changedUi = false;
     for (const [k, d] of Object.entries(r.days || {})) {
-      const loc = S.entries[k];
-      const locU = loc ? (loc.u || 1) : (z.deleted[k] || 0);
-      if (d.u < locU) continue; // здесь изменено позже — оставляем своё
-      if (d.del) {
-        if (loc) { delete S.entries[k]; changedUi = true; }
-        z.deleted[k] = d.u;
-      } else {
-        const nx = { points: d.p || 0, machines: d.m || 0, start: d.s ?? null, end: d.e ?? null, note: d.n || '', z: d.z || (loc && loc.z) || [], u: d.u };
-        if (!loc || !sameEntry(loc, nx)) changedUi = true;
-        S.entries[k] = nx;
-        delete z.deleted[k];
+      // По полям: в каждом поле остаётся более позднее изменение (здешнее или пришедшее)
+      const loc = S.entries[k] || null;
+      const lt = loc ? fuOf(loc) : Object.fromEntries(FMAP.map(([, f]) => [f, z.deleted[k] || 0]));
+      const st = {};
+      for (const [key, f] of FMAP) {
+        if (d.fu && d.fu[f] != null) st[f] = d.fu[f];
+        else if (key === 'z' && !d.del && !('z' in d)) st[f] = 0;
+        else st[f] = d.u || 1;
       }
+      const sv = { points: d.p || 0, machines: d.m || 0, start: d.s ?? null, end: d.e ?? null, note: d.n || '', z: d.z || [] };
+      const nx = { u: 0, fu: {} };
+      for (const [key, f] of FMAP) {
+        const remote = st[f] >= lt[f] && st[f] > 0;
+        nx[key] = remote ? (d.del ? FEMPTY[key] : sv[key]) : (loc ? loc[key] ?? FEMPTY[key] : FEMPTY[key]);
+        nx.fu[f] = remote ? st[f] : lt[f];
+      }
+      nx.u = Math.max(1, ...Object.values(nx.fu));
+      if (!loc || !sameEntry(loc, nx)) changedUi = true;
+      S.entries[k] = nx;
+      delete z.deleted[k];
     }
     if (r.meta && r.meta.u >= (z.metaU || 0)) {
       const rt = r.meta.rates || {};
