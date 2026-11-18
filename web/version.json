@@ -1,10 +1,10 @@
 {
     "apk":  {
-                "code":  27,
-                "name":  "3.5",
+                "code":  28,
+                "name":  "3.6",
                 "size":  1541280,
-                "sha256":  "7998a1cd975fba3fc3b43b6c430d822fab773019cce92efa0111728e437d82cb"
+                "sha256":  "5cdc0901bc189f21d6a4dcc97ae1fc8fe4c6c3da2e1831247ef13165e7c1aabd"
             },
-    "web":  "3.6",
-    "at":  "2026-11-18T14:19:41Z"
+    "web":  "3.7",
+    "at":  "2026-11-18T14:46:48Z"
 }

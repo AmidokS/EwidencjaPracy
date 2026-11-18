@@ -2,7 +2,7 @@
 /* Учёт работы — PWA. Создатель: Artur Alimhulov.
    Данные хранятся на телефоне (localStorage) и копией на сервере под кодом доступа (см. «Записи на сервере»). */
 
-const VERSION = '3.6';
+const VERSION = '3.7';
 const STORE_KEY = 'uchet-raboty-v1';
 
 /* ==== calc:begin ====
@@ -279,13 +279,25 @@ function waStartEnd(which, word) {
 /* ===================== Письмо о проблеме ===================== */
 /* Форма: тема (фирма), причина, текст, адрес, фото → открываем почту телефона с готовым письмом.
    Получатели — из настроек владельца (страница управления). Фото на сервер не уходят. */
+/* Польские формы по числу: 1 posiłek, 2–4 posiłki (кроме 12–14), 5+ posiłków. */
+const plForm = (n, one, few, many) => (n === 1 ? one : n % 10 >= 2 && n % 10 <= 4 && (n % 100 < 12 || n % 100 > 14) ? few : many);
+/* Причины: [ключ, по-русски, по-польски, есть ли «сколько штук», текст(n)] */
 const MAIL_REASONS = [
-  ['uszk', 'Повреждение', 'Uszkodzenie', 'Dzień dobry,\n\ninformuję, że posiłek uległ uszkodzeniu w magazynie i został wyrzucony. Reszta zawartości została przepakowana do nowej torby.'],
-  ['brak', 'Нет пачки', 'Brak paczki', 'Dzień dobry,\n\ninformuję, że na magazynie brakowało paczki dla poniższego adresu.'],
-  ['inne', 'Другое', 'Inne', 'Dzień dobry,\n\n'],
+  ['uszk', 'Повреждение', 'Uszkodzenie', true, (n) => `Dzień dobry,\n\ninformuję, że ${plForm(n,
+    'posiłek uległ uszkodzeniu w magazynie i został wyrzucony',
+    `${n} posiłki uległy uszkodzeniu w magazynie i zostały wyrzucone`,
+    `${n} posiłków uległo uszkodzeniu w magazynie i zostało wyrzuconych`)}. Reszta zawartości została przepakowana do nowej torby.`],
+  ['brak', 'Нет пачки', 'Brak paczki', false, () => 'Dzień dobry,\n\ninformuję, że na magazynie brakowało paczki dla poniższego adresu.'],
+  ['kradz', 'Кража', 'Kradzież', true, (n) => `Dzień dobry,\n\ninformuję, że ${plForm(n,
+    'paczka dla poniższego adresu została skradziona',
+    `${n} paczki dla poniższych adresów zostały skradzione`,
+    `${n} paczek dla poniższych adresów zostało skradzionych`)} na rejonie.`],
+  ['inne', 'Другое', 'Inne', false, () => 'Dzień dobry,\n\n'],
 ];
+const mailReason = (k) => MAIL_REASONS.find((x) => x[0] === k) || MAIL_REASONS[0];
+const mailTpl = (k, n) => mailReason(k)[4](n);
 const mailTo = () => ((S.auth.cfg && S.auth.cfg.mailTo) || []).filter(Boolean);
-let mail = null; // открытая форма: { subject, reason, text, address, photos: [{ file, url }] }
+let mail = null; // открытая форма: { subject, reason, count, text, address, photos: [{ file, url }] }
 
 function mailBody() {
   const a = (mail.address || '').trim();
@@ -306,7 +318,13 @@ function renderMail() {
     <input class="field" id="mail-subject" value="${esc(mail.subject)}" placeholder="Robinfood" maxlength="80" autocomplete="off">
     ${subjects.length ? `<div class="chips">${subjects.map((s) => `<button class="chip ${s === mail.subject ? 'on' : ''}" data-mail-subj="${esc(s)}">${esc(s)}</button>`).join('')}</div>` : ''}
     <label class="lbl">${t('Причина', 'Powód')}</label>
-    <div class="seg">${MAIL_REASONS.map(([k, ru, pl]) => `<button class="${mail.reason === k ? 'on' : ''}" data-mail-reason="${k}">${t(ru, pl)}</button>`).join('')}</div>
+    <div class="chips">${MAIL_REASONS.map(([k, ru, pl]) => `<button class="chip ${mail.reason === k ? 'on' : ''}" data-mail-reason="${k}">${mail.reason === k ? ic('check', 14) : ''}${t(ru, pl)}</button>`).join('')}</div>
+    ${mailReason(mail.reason)[3] ? `<label class="lbl">${mail.reason === 'kradz' ? t('Сколько пачек', 'Ile paczek') : t('Сколько posiłków повреждено', 'Ile posiłków uszkodzonych')}</label>
+    <div class="stepper mail-count">
+      <button class="step" data-mail-count="-1" aria-label="${t('Меньше', 'Mniej')}">${ic('minus', 20)}</button>
+      <span class="num">${mail.count}</span>
+      <button class="step" data-mail-count="1" aria-label="${t('Больше', 'Więcej')}">${ic('plus', 20)}</button>
+    </div>` : ''}
     <label class="lbl">${t('Текст письма (можно поправить)', 'Treść (można poprawić)')}</label>
     <textarea class="field" id="mail-text" rows="5">${esc(mail.text)}</textarea>
     <label class="lbl">${t('Адрес клиента', 'Adres klienta')}</label>
@@ -323,7 +341,7 @@ function renderMail() {
 
 function mailOpen() {
   const subjects = S.settings.mailSubjects || [];
-  mail = { subject: subjects[0] || '', reason: 'uszk', text: MAIL_REASONS[0][3], address: '', photos: [] };
+  mail = { subject: subjects[0] || '', reason: 'uszk', count: 1, text: mailTpl('uszk', 1), address: '', photos: [] };
   renderMail();
 }
 function mailClose() {
@@ -397,17 +415,19 @@ document.addEventListener('click', (ev) => {
     if (m.dataset.mail === 'send') mailSend();
     return;
   }
-  const r = el.closest('[data-mail-reason]');
-  if (r) {
+  // Причина или количество поменялись — текст строим заново, но только если человек его не правил
+  // (он совпадает с прежним готовым текстом)
+  const setTpl = (reason, count) => {
     mailRead();
-    const tpl = MAIL_REASONS.find((x) => x[0] === r.dataset.mailReason);
-    // Текст меняем, только если человек его не правил (он совпадает с прежним шаблоном)
-    const prev = MAIL_REASONS.find((x) => x[0] === mail.reason);
-    if (!mail.text.trim() || (prev && mail.text === prev[3])) mail.text = tpl[3];
-    mail.reason = tpl[0];
+    if (!mail.text.trim() || mail.text === mailTpl(mail.reason, mail.count)) mail.text = mailTpl(reason, count);
+    mail.reason = reason;
+    mail.count = count;
     renderMail();
-    return;
-  }
+  };
+  const r = el.closest('[data-mail-reason]');
+  if (r) { setTpl(r.dataset.mailReason, 1); return; }
+  const c = el.closest('[data-mail-count]');
+  if (c) { setTpl(mail.reason, Math.min(50, Math.max(1, mail.count + Number(c.dataset.mailCount)))); return; }
   const s = el.closest('[data-mail-subj]');
   if (s) { mailRead(); mail.subject = s.dataset.mailSubj; renderMail(); return; }
   const d = el.closest('[data-mail-del]');
