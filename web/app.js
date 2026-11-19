@@ -2,7 +2,7 @@
 /* Учёт работы — PWA. Создатель: Artur Alimhulov.
    Данные хранятся на телефоне (localStorage) и копией на сервере под кодом доступа (см. «Записи на сервере»). */
 
-const VERSION = '4.0';
+const VERSION = '4.1';
 const STORE_KEY = 'uchet-raboty-v1';
 
 /* ==== calc:begin ====
@@ -237,9 +237,8 @@ const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '
 /* ===================== WhatsApp ===================== */
 // Строки шапки отчёта: «Имя Фамилия», «BEM1», «WE1GS69»
 const headLines = () => (S.settings.header || '').split('\n').map((s) => s.trim()).filter(Boolean);
-/** Код бригады для «BEM1 Start» — вторая строка шапки. */
+/** Код бригады — вторая строка шапки (без неё дневной отчёт не отправляем). */
 const teamCode = () => { const h = headLines(); return h[1] || ''; };
-const waStatus = (word) => (teamCode() ? `${teamCode()} ${word}` : word);
 const miniReport = (d) => [fullD(d), ...headLines(), String(entry(d).points || 0)].join('\n');
 /** Открыть WhatsApp с готовым текстом — человек сам выбирает группу и жмёт «Отправить». */
 function openWhatsApp(text) {
@@ -247,35 +246,6 @@ function openWhatsApp(text) {
   const w = window.open(url, '_blank');
   if (!w) location.href = url;
 }
-const nowMinutes = () => { const n = new Date(); return n.getHours() * 60 + n.getMinutes(); };
-/**
- * «BEM1 Start» / «BEM1 Koniec»: ставим время начала/конца на сейчас и открываем WhatsApp.
- * Время идёт в тот день, который открыт: сегодня или завтра (смена с 22:00 считается за следующий день —
- * вечером открываешь завтрашний день и жмёшь Start там).
- * Смена через полночь: если на сегодня до полудня начала нет, а вчера смена начата и не закончена — «Koniec» идёт во вчерашний день.
- * Если время уже стоит — спрашиваем, заменить ли (чтобы случайное повторное нажатие его не испортило).
- */
-function waStartEnd(which, word) {
-  if (!teamCode()) { toast(t('Сначала заполни «Шапку отчёта» в Настройках', 'Najpierw uzupełnij «Nagłówek raportu» w Ustawieniach')); return; }
-  const m = nowMinutes();
-  const td = todayDay();
-  let day = ui.day === td + 1 ? td + 1 : td;
-  if (day === td && which === 'end' && m < 12 * 60 && entry(day).start == null) {
-    const y = entry(day - 1);
-    if (y.start != null && y.end == null) day -= 1;
-  }
-  const cur = entry(day)[which];
-  const label = which === 'start' ? t('Начало', 'Początek') : t('Конец', 'Koniec');
-  if (cur != null && cur !== m && !confirm(t(`${label} уже стоит: ${clock(cur)}. Заменить на ${clock(m)}?`, `${label} już jest: ${clock(cur)}. Zamienić na ${clock(m)}?`))) {
-    openWhatsApp(waStatus(word));
-    return;
-  }
-  update(day, (x) => { x[which] = m; });
-  if (ui.day === day) refreshDay();
-  toast(`${label}${day !== td ? ` (${shortD(day)})` : ''}: ${clock(m)}`);
-  openWhatsApp(waStatus(word));
-}
-
 /* ===================== Письмо о проблеме ===================== */
 /* Форма: тема (фирма), причина, текст, адрес, фото → открываем почту телефона с готовым письмом.
    Получатели — из настроек владельца (страница управления). Фото на сервер не уходят. */
@@ -815,43 +785,47 @@ document.addEventListener('change', async (ev) => {
 document.addEventListener('keydown', (ev) => { if (zrep && ev.key === 'Escape') zrepClose(); });
 
 /* ===================== Отчёт ===================== */
-function buildReport(p) {
-  const pl = S.report.polish, lang = pl ? 'pl' : 'ru';
+/**
+ * Строки отчёта за период — всегда по-польски (его копируют в чат фирмы).
+ * Каждая строка: { t: текст, d: день (если это строка дня — по ней можно открыть день), k: вид строки }.
+ */
+function reportLines(p) {
   // Жабки выключены — в отчёте их нет; если иначе ничего не осталось, показываем точки
-  const o = { ...S.report, machines: S.report.machines && Z() };
-  if (!o.points && !o.machines && !o.hours) o.points = true;
-  const lines = [];
+  const o = { points: S.report.points, machines: S.report.machines && Z() };
+  if (!o.points && !o.machines) o.points = true;
+  const L2 = [];
   const head = (S.settings.header || '').trim();
-  if (head) { lines.push(head, ''); }
-  lines.push(`${pl ? 'Raport za' : 'Отчёт за'} ${shortD(p.start)}–${fullD(p.end)}`, '');
+  if (head) { for (const h of head.split('\n')) L2.push({ t: h, k: 'head' }); L2.push({ t: '', k: 'gap' }); }
+  L2.push({ t: `Raport za ${shortD(p.start)}–${fullD(p.end)}`, k: 'title' }, { t: '', k: 'gap' });
   for (const e of daysOf(p)) {
     const x = entry(e);
     const parts = [];
-    if (o.points) parts.push(`${pl ? 'punkty' : 'точки'}: ${x.points}`);
-    if (o.machines) parts.push(`${pl ? 'Żabka' : 'Жабка'}: ${x.machines}`);
-    if (o.hours) parts.push(`${pl ? 'godziny' : 'часы'}: ${hoursShort(worked(x))}`);
-    const w = (o.points && x.points > 0) || (o.machines && x.machines > 0) || (o.hours && worked(x) > 0);
-    lines.push(`${shortD(e)} ${weekdayShort(e, lang)} — ${w ? parts.join(', ') : (pl ? 'wolne' : 'выходной')}`);
+    if (o.points) parts.push(`punkty: ${x.points}`);
+    if (o.machines) parts.push(`Żabka: ${x.machines}`);
+    const w = (o.points && x.points > 0) || (o.machines && x.machines > 0);
+    L2.push({ t: `${shortD(e)} ${weekdayShort(e, 'pl')} — ${w ? parts.join(', ') : 'wolne'}`, d: e, k: w ? 'day' : 'off' });
   }
   const s = summarize(p);
-  lines.push('');
-  if (o.points) lines.push(`${pl ? 'Razem punktów' : 'Итого точек'}: ${s.points}`);
+  L2.push({ t: '', k: 'gap' });
+  if (o.points) L2.push({ t: `Razem punktów: ${s.points}`, k: 'sum' });
   if (o.machines) {
     if (isSecondHalf(p)) {
       // Жабку платят раз в месяц — во втором отчёте считаем и первую половину
       const { y, m } = ymd(p.start);
       const endD = ymd(p.end).d;
       const first = summarize({ start: dayOf(y, m, 1), end: dayOf(y, m, 15) }).machines;
-      const zh = pl ? 'Razem Żabka' : 'Итого Жабка';
-      lines.push(`${zh} (1–15): ${first}`);
-      lines.push(`${zh} (16–${endD}): ${s.machines}`);
-      lines.push(`${pl ? 'Razem Żabka za miesiąc' : 'Итого Жабка за месяц'} (1–${endD}): ${first + s.machines}`);
+      L2.push({ t: `Razem Żabka (1–15): ${first}`, k: 'sum' });
+      L2.push({ t: `Razem Żabka (16–${endD}): ${s.machines}`, k: 'sum' });
+      L2.push({ t: `Razem Żabka za miesiąc (1–${endD}): ${first + s.machines}`, k: 'sum' });
     } else {
-      lines.push(`${pl ? 'Razem Żabka' : 'Итого Жабка'}: ${s.machines}`);
+      L2.push({ t: `Razem Żabka: ${s.machines}`, k: 'sum' });
     }
   }
-  if (o.hours) lines.push(`${pl ? 'Razem godzin' : 'Итого часов'}: ${hoursShort(s.minutes)}`);
-  return lines.join('\n').trim();
+  return L2;
+}
+
+function buildReport(p) {
+  return reportLines(p).map((l) => l.t).join('\n').trim();
 }
 
 
@@ -1208,6 +1182,7 @@ const ICONS = {
   upload: '<path d="M12 15V3M7 8l5-5 5 5M5 21h14"/>',
   back: '<path d="M9 14l-5-5 5-5"/><path d="M4 9h11a5 5 0 0 1 0 10h-3"/>',
   x: '<path d="M6 6l12 12M18 6L6 18"/>',
+  alert: '<circle cx="12" cy="12" r="9"/><path d="M12 7.5v5.5M12 16.5v.01"/>',
   table: '<rect x="3" y="4" width="18" height="16" rx="2"/><path d="M3 10h18M3 15h18M9 4v16"/>',
 };
 const ic = (name, size = 20) =>
@@ -1255,65 +1230,57 @@ const $sheet = document.getElementById('sheet-root');
 function renderDay() {
   const d = ui.day, x = entry(d), td = todayDay();
   const rel = d === td ? t('Сегодня', 'Dziś') : d === td - 1 ? t('Вчера', 'Wczoraj') : d === td + 1 ? t('Завтра', 'Jutro') : String(ymd(d).y);
-  const timeTile = (which, label, v) => `
-    <label class="time-tile">
-      <span class="lbl">${label}</span>
-      <span class="tval ${v == null ? 'empty' : ''}" id="tv-${which}">${v == null ? '--:--' : clock(v)}</span>
-      <input type="time" data-time="${which}" value="${v == null ? '' : clock(v)}" aria-label="${label}">
-    </label>`;
+  const stepper = (field, minus, plus, value, label, digits) => `<div class="stepper">
+      <button class="step" data-act="${minus}" aria-label="${t('Меньше', 'Mniej')}">${ic('minus', 22)}</button>
+      <input class="num" data-field="${field}" inputmode="numeric" pattern="[0-9]*" placeholder="0" autocomplete="off" maxlength="${digits}" value="${value || ''}" aria-label="${label}">
+      <button class="step" data-act="${plus}" aria-label="${t('Больше', 'Więcej')}">${ic('plus', 22)}</button>
+    </div>`;
 
   return `
     ${navHead(weekdayName(d), `${dayMonth(d)} · ${rel}`, true)}
     ${d !== td ? `<button class="chip-btn" data-act="today">${ic('back', 16)} ${t('Вернуться к сегодня', 'Wróć do dziś')}</button>` : ''}
 
     <div class="col">
-    ${card('chat', 'WhatsApp', '',
-      `${d === td || d === td + 1 ? `<div class="btn-row wa-row">
-         <button class="btn tonal" data-act="wa-start">${ic('play', 18)} ${esc(waStatus('Start'))}</button>
-         <button class="btn tonal" data-act="wa-end">${ic('stop', 18)} ${esc(waStatus('Koniec'))}</button>
-       </div>` : ''}
-       <button class="btn tonal" data-act="wa-mini">${ic('send', 18)} ${t('Минирапорт за', 'Miniraport za')} ${shortD(d)}</button>`)}
+    <div class="hero" id="day-hero">${dayHero(d)}</div>
 
     ${card('truck', t('Точки катеринга', 'Punkty cateringu'), `<span class="hint">× ${rate(S.rates.point)} zł</span>`,
-      `<input class="num" data-field="points" inputmode="numeric" pattern="[0-9]*" placeholder="0" autocomplete="off" value="${x.points || ''}" aria-label="${t('Точки', 'Punkty')}">`)}
+      stepper('points', 'p-minus', 'p-plus', x.points, t('Точки', 'Punkty'), 4))}
 
-    ${Z() ? card('store', t('Автоматы Жабки', 'Automaty Żabki'), `<span class="hint">× ${rate(S.rates.machine)} zł</span>`,
-      `<div class="stepper">
-        <button class="step" data-act="m-minus" aria-label="${t('Меньше', 'Mniej')}">${ic('minus', 22)}</button>
-        <input class="num" data-field="machines" inputmode="numeric" pattern="[0-9]*" placeholder="0" autocomplete="off" value="${x.machines || ''}" aria-label="${t('Автоматы', 'Automaty')}">
-        <button class="step" data-act="m-plus" aria-label="${t('Больше', 'Więcej')}">${ic('plus', 22)}</button>
-      </div>`) : ''}
-
-    ${Z() ? zabkiCard(d) : ''}
-
-    ${card('clock', t('Часы работы', 'Godziny pracy'), `<span id="hours-pill">${hoursPill(x)}</span>`,
-      `<div class="times">${timeTile('start', t('Начало', 'Początek'), x.start)}${timeTile('end', t('Конец', 'Koniec'), x.end)}</div>
-       <div class="right" id="clear-time" ${x.start == null && x.end == null ? 'hidden' : ''}>
-         <button class="link" data-act="clear-time">${t('Сбросить время', 'Wyczyść godziny')}</button>
-       </div>`)}
+    ${Z() ? `<div class="zone-z">${card('store', t('Автоматы Жабки', 'Automaty Żabki'), `<span class="hint">× ${rate(S.rates.machine)} zł</span>`,
+      stepper('machines', 'm-minus', 'm-plus', x.machines, t('Автоматы', 'Automaty'), 3))}
+    ${zabkiCard(d)}</div>` : ''}
     </div>
 
     <div class="col">
-    ${card('mail', t('Письмо о проблеме', 'Zgłoszenie mailem'), '',
-      `<p class="muted small">${t('Нет пачки, повреждённый товар — письмо с фото на почту фирмы.', 'Brak paczki, uszkodzony towar — mail ze zdjęciami do firmy.')}</p>
-       <button class="btn tonal" data-act="mail-open">${ic('mail', 18)} ${t('Написать письмо', 'Napisz maila')}</button>`)}
+    <div class="actions2">
+      <button class="act-tile" data-act="wa-mini">${ic('send', 22)}<b>${t('Дневной отчёт', 'Raport dzienny')}</b><span>WhatsApp · ${shortD(d)}</span></button>
+      <button class="act-tile" data-act="mail-open">${ic('mail', 22)}<b>${t('Письмо о проблеме', 'Zgłoszenie')}</b><span>${t('брак, повреждение', 'brak, uszkodzenie')}</span></button>
+    </div>
     </div>`;
 }
 
-const hoursPill = (x) => (worked(x) > 0 ? `<span class="pill">${hours(worked(x))}</span>` : '');
+/** Зелёный блок сверху «Дня»: сколько заработано за день, точки и Жабки. */
+function dayHero(d) {
+  const x = entry(d), td = todayDay();
+  const lbl = d === td ? t('Заработано сегодня', 'Zarobione dziś') : t('Заработано за день', 'Zarobione tego dnia');
+  const parts = [`${x.points || 0} ${plPoints(x.points || 0)}`];
+  if (Z()) parts.push(`${x.machines || 0} ${plZabki(x.machines || 0)}`);
+  return `<div class="lbl2">${lbl}</div><div class="big">${money(dayMoney(x))}</div><div class="small">${parts.join(' · ')}</div>`;
+}
+
+/** «1 точка / 2 точки / 5 точек» и польские формы. */
+function plural(n, ru, pl) {
+  const a = Math.abs(n) % 100, b = a % 10;
+  if (isPl()) return n === 1 ? pl[0] : b >= 2 && b <= 4 && (a < 12 || a > 14) ? pl[1] : pl[2];
+  return b === 1 && a !== 11 ? ru[0] : b >= 2 && b <= 4 && (a < 12 || a > 14) ? ru[1] : ru[2];
+}
+const plPoints = (n) => plural(n, ['точка', 'точки', 'точек'], ['punkt', 'punkty', 'punktów']);
+const plZabki = (n) => plural(n, ['Жабка', 'Жабки', 'Жабок'], ['Żabka', 'Żabki', 'Żabek']);
+const plDays = (n) => plural(n, ['рабочий день', 'рабочих дня', 'рабочих дней'], ['dzień pracy', 'dni pracy', 'dni pracy']);
 
 function refreshDay() {
-  const x = entry(ui.day);
-  const set = (id, html) => { const el = document.getElementById(id); if (el) el.innerHTML = html; };
-  set('hours-pill', hoursPill(x));
-  const ct = document.getElementById('clear-time');
-  if (ct) ct.hidden = x.start == null && x.end == null;
-  for (const w of ['start', 'end']) {
-    const v = x[w], tv = document.getElementById(`tv-${w}`);
-    if (tv) { tv.textContent = v == null ? '--:--' : clock(v); tv.classList.toggle('empty', v == null); }
-    const inp = document.querySelector(`[data-time="${w}"]`);
-    if (inp && document.activeElement !== inp) inp.value = v == null ? '' : clock(v);
-  }
+  const h = document.getElementById('day-hero');
+  if (h) h.innerHTML = dayHero(ui.day);
 }
 
 /* ===================== Экран «Календарь» ===================== */
@@ -1321,12 +1288,17 @@ function renderCalendar() {
   const mi = ui.month, first = monthFirst(mi), { y, m } = ymd(first), n = daysInMonth(y, m), off = weekday(first), td = todayDay();
   const heads = DAYS_SHORT[L()].map((w, i) => `<span class="${i >= 5 ? 'we' : ''}">${w[0].toUpperCase() + w.slice(1)}</span>`).join('');
   let cells = '<span></span>'.repeat(off);
+  // Тепловая карта: чем больше точек за день, тем насыщеннее клетка
+  let maxP = 1;
+  for (let k = 0; k < n; k++) { const x = S.entries[iso(first + k)]; if (x && x.points > maxP) maxP = x.points; }
   for (let k = 0; k < n; k++) {
     const d = first + k, x = S.entries[iso(d)];
     const cls = ['cell'];
-    if (x && isWork(x)) cls.push('work');
+    let heat = '';
+    if (x && isWork(x)) { cls.push('work'); heat = `;--heat:${Math.round(18 + 52 * Math.min(1, (x.points || 0) / maxP))}%`; }
+    if (weekday(d) >= 5) cls.push('we');
     if (d === td) cls.push('today');
-    cells += `<button class="${cls.join(' ')}" data-act="open-day" data-day="${d}" style="--i:${k}">
+    cells += `<button class="${cls.join(' ')}" data-act="open-day" data-day="${d}" style="--i:${k}${heat}">
       <b>${k + 1}</b>
       ${x && x.points ? `<span class="cp">${x.points}</span>` : ''}
       ${Z() && x && x.machines ? `<span class="cm">Ż${x.machines}</span>` : ''}
@@ -1340,8 +1312,9 @@ function renderCalendar() {
     <div class="col wide">
     <div class="cal-wrap"><div class="cal-head">${heads}</div><div class="cal ${calWave(mi)}">${cells}</div></div>
     <div class="legend">
-      <span><i style="background:var(--primary)"></i>${t('точки', 'punkty')}</span>
-      ${Z() ? `<span><i style="background:var(--tertiary)"></i>${t('Жабка', 'Żabka')}</span>` : ''}    </div>
+      <span class="heat-scale">${t('меньше точек', 'mniej punktów')}<i></i>${t('больше', 'więcej')}</span>
+      ${Z() ? `<span><i style="background:var(--z)"></i>${t('Жабки', 'Żabki')}</span>` : ''}
+    </div>
     </div>
     <div class="col">${halfCards}</div>`;
 }
@@ -1349,76 +1322,45 @@ function renderCalendar() {
 /* ===================== Экран «Отчёт» ===================== */
 function renderReport() {
   const p = periodFromIndex(ui.period), s = summarize(p), pay = payout(p), td = todayDay(), o = S.report;
-  const report = buildReport(p);
-  let progress = '';
-  if (td >= p.start && td <= p.end) {
-    const dayN = td - p.start + 1, size = p.end - p.start + 1, last = td === p.end;
-    progress = `<div class="hero">
-      <div style="font-size:20px;font-weight:700">${last ? t('Сегодня день отчёта', 'Dziś dzień raportu') : t(`День ${dayN} из ${size}`, `Dzień ${dayN} z ${size}`)}</div>
-      <div style="height:8px;border-radius:4px;background:color-mix(in srgb, var(--on-pc) 15%, transparent);margin:6px 0 4px;overflow:hidden">
-        <div style="height:100%;width:${(dayN / size) * 100}%;background:var(--primary);border-radius:4px"></div></div>
-      <div class="small">${last ? t('Не забудь отправить отчёт ниже', 'Nie zapomnij wysłać raportu poniżej') : t(`До отчёта ${size - dayN} дн.`, `Do raportu ${size - dayN} dni`)}</div>
+  const endDay = daysInMonth(ymd(p.start).y, ymd(p.start).m);
+  const counts = [`${s.points} ${plPoints(s.points)}`];
+  if (Z()) counts.push(`${s.machines} ${plZabki(s.machines)}`);
+  counts.push(`${s.workDays} ${plDays(s.workDays)}`);
+
+  const hero = `<div class="hero">
+      <div class="lbl2">${t('К выплате за период', 'Do wypłaty za okres')}</div>
+      <div class="big">${money(pay.total)}</div>
+      <div class="small">${counts.join(' · ')}</div>
+      ${Z() && !pay.paidNow && pay.machines > 0 ? `<div class="small">${t(`Жабки (${money(pay.machinesMoney)}) войдут в выплату за 16–${endDay}`, `Żabki (${money(pay.machinesMoney)}) wejdą do wypłaty za 16–${endDay}`)}</div>` : ''}
     </div>`;
-  }
-  const monthMachines = isSecondHalf(p) ? summarize({ start: monthFirst(monthIndexOf(p.start)), end: p.end }).machines : null;
 
-  const chip = (act, k, label, on) => `<button class="chip ${on ? 'on' : ''}" data-act="${act}" data-k="${k}">${on ? ic('check', 14) : ''}${label}</button>`;
-  const repBody = `
-    <p class="muted">${t('Что включить', 'Co uwzględnić')}</p>
-    <div class="chips">
-      ${chip('rep', 'points', t('Точки', 'Punkty'), o.points || (!o.hours && !(o.machines && Z())))}
-      ${Z() ? chip('rep', 'machines', t('Жабка', 'Żabka'), o.machines) : ''}
-      ${chip('rep', 'hours', t('Часы', 'Godziny'), o.hours)}
-    </div>
-    <p class="muted">${t('Язык отчёта', 'Język raportu')}</p>
-    <div class="chips">
-      ${chip('rep-lang', 'ru', 'Русский', !o.polish)}
-      ${chip('rep-lang', 'pl', 'Polski', o.polish)}
-    </div>
-    <div class="btn-row">
-      <button class="btn primary" data-act="share-report">${ic('share', 18)} ${t('Отправить', 'Wyślij')}</button>
-      <button class="btn tonal" data-act="copy-report">${ic('copy', 18)} ${t('Копировать', 'Kopiuj')}</button>
-    </div>
-    ${!(S.settings.header || '').trim() ? `<p class="muted small">${t('Шапка отчёта пустая — впиши её в Настройках.', 'Nagłówek raportu jest pusty — uzupełnij go w Ustawieniach.')}</p>` : ''}
-    <div><button class="link" data-act="toggle-report">${ui.showReport ? t('Скрыть текст отчёта', 'Ukryj tekst raportu') : t('Показать текст отчёта', 'Pokaż tekst raportu')}</button></div>
-    ${ui.showReport ? `<pre class="mono">${esc(report)}</pre>` : ''}`;
-
-  const rows = daysOf(p).map((e) => {
-    const x = entry(e), dash = '<span class="dash">—</span>';
-    return `<button class="trow ${Z() ? '' : 'noz'} ${e === td ? 'today' : ''}" data-act="open-day" data-day="${e}">
-      <span>${shortD(e)} ${weekdayShort(e)}</span>
-      <span>${x.points || dash}</span>${Z() ? `<span>${x.machines || dash}</span>` : ''}<span>${worked(x) ? hoursShort(worked(x)) : dash}</span>
-      <span class="zl">${dayMoney(x) > 0 ? rate(dayMoney(x)) : dash}</span>
-    </button>`;
+  // Отчёт как сообщение в чате: строки дней можно нажать — откроется день
+  const bubble = reportLines(p).map((l) => {
+    if (l.k === 'gap') return '<div class="rl-gap"></div>';
+    if (l.d != null) return `<button class="rl ${l.k} ${l.d === td ? 'today' : ''}" data-act="open-day" data-day="${l.d}">${esc(l.t)}</button>`;
+    return `<div class="rl ${l.k}">${esc(l.t)}</div>`;
   }).join('');
-  const daysBody = `
-    <div>
-      <div class="trow head ${Z() ? '' : 'noz'}"><span>${t('Дата', 'Data')}</span><span>${t('Точки', 'Punkty')}</span>${Z() ? `<span>${t('Жабка', 'Żabka')}</span>` : ''}<span>${t('Часы', 'Godziny')}</span><span class="zl">zł</span></div>
-      ${rows}
-    </div>
-    <p style="margin:0;font-weight:650;font-size:15px">${t('Итого', 'Razem')}: ${s.points} ${t('точек', 'punktów')}${Z() ? `, ${s.machines} ${t('автоматов', 'automatów')}` : ''}, ${hours(s.minutes)} · ${money(sumMoney(s))}</p>`;
+  const chip = (k, label, on) => `<button class="chip ${on ? 'on' : ''}" data-act="rep" data-k="${k}">${on ? ic('check', 14) : ''}${label}</button>`;
+  const noHead = !(S.settings.header || '').trim();
+
+  const repBody = `
+    ${Z() ? `<div class="chips">${chip('points', t('Точки', 'Punkty'), o.points || !o.machines)}${chip('machines', t('Жабки', 'Żabki'), o.machines)}</div>` : ''}
+    <button class="btn primary big-btn" data-act="copy-report">${ic('copy', 20)} ${t('Скопировать отчёт', 'Kopiuj raport')}</button>
+    ${noHead ? `<div class="warn">${ic('alert', 18)}<span>${t('Шапка отчёта пустая.', 'Nagłówek raportu jest pusty.')} <button class="link" data-act="tab" data-v="4">${t('Заполнить', 'Uzupełnij')}</button></span></div>` : ''}
+    <div class="rep-bubble">${bubble}</div>
+    <p class="muted small">${t('Отчёт всегда на польском. Нажми на день, чтобы его поправить.', 'Raport jest zawsze po polsku. Dotknij dnia, aby go poprawić.')}</p>`;
 
   return `
     ${navHead(periodTitle(p), `${t('Период выплаты', 'Okres rozliczeniowy')} · ${ymd(p.end).y}`)}
-    <div class="col">
-    ${progress}
-    <div class="tiles">
-      ${tile(t('Точек', 'Punktów'), s.points)}
-      ${Z() ? tile(t('Автоматов', 'Automatów'), s.machines, monthMachines != null ? `${t('за месяц', 'za miesiąc')}: ${monthMachines}` : '')
-        : tile(t('К выплате', 'Do wypłaty'), money(pay.total))}
-      ${tile(t('Часов', 'Godzin'), hoursShort(s.minutes))}
-      ${tile(t('Рабочих дней', 'Dni pracy'), s.workDays)}
-    </div>
-    ${card('doc', t('Отчёт', 'Raport'), '', repBody)}
-    </div>
-    <div class="col">${card('list', t('По дням', 'Dzień po dniu'), '', daysBody)}</div>`;
+    <div class="col">${hero}</div>
+    <div class="col">${card('doc', t('Отчёт', 'Raport'), '', repBody)}</div>`;
 }
 
 /* Сверка выплаты: человек вписывает, сколько пришло на счёт, — видно, не недоплатили ли */
 const paidInputValue = (v) => (v == null ? '' : v.toFixed(2).replace('.', ','));
 
 function paidDiffHtml(expected, paid) {
-  if (paid == null) return `<span class="muted small">${t('Впиши сумму, когда придут деньги, — сравню с расчётом.', 'Wpisz kwotę, gdy przyjdą pieniądze — porównam z wyliczeniem.')}</span>`;
+  if (paid == null) return `<p class="muted small">${t('Впиши сумму, когда придут деньги, — сравню с расчётом.', 'Wpisz kwotę, gdy przyjdą pieniądze — porównam z wyliczeniem.')}</p>`;
   const r = reconcile(expected, paid);
   if (r.status === 'ok') return `<span class="paid-ok pop">${ic('check', 16)} ${t('Сходится с расчётом', 'Zgadza się z wyliczeniem')}</span>`;
   if (r.status === 'less') return `<span class="paid-less">${t('Недоплатили', 'Brakuje')} ${money(-r.diff)}</span>`;
@@ -1440,30 +1382,35 @@ function payCard(p) {
   const s = summarize(p), pay = payout(p);
   const endDay = daysInMonth(ymd(p.start).y, ymd(p.start).m);
   const body = `
-    <p class="muted">${s.points} ${t('точек', 'punktów')}${Z() ? ` · ${s.machines} ${t('автоматов', 'automatów')}` : ''} · ${hours(s.minutes)}</p>
+    <p class="muted">${s.points} ${plPoints(s.points)}${Z() ? ` · ${s.machines} ${plZabki(s.machines)}` : ''}</p>
     <div class="money-row"><span>${t('Точки', 'Punkty')} ${pay.points} × ${rate(S.rates.point)}</span><span>${money(pay.pointsMoney)}</span></div>
     ${Z() && pay.paidNow ? `<div class="money-row"><span>${t('Жабка за месяц', 'Żabka za miesiąc')} ${pay.machines} × ${rate(S.rates.machine)}</span><span>${money(pay.machinesMoney)}</span></div>` : ''}
     <div class="total"><span style="font-weight:650">${t('Всего', 'Razem')}</span><b>${money(pay.total)}</b></div>
     ${Z() && !pay.paidNow ? `<p class="muted small">${t(`Жабка оплачивается раз в месяц — войдёт в выплату за 16–${endDay}. Сейчас: ${pay.machines} авт. = ${money(pay.machinesMoney)}`,
       `Żabka jest płatna raz w miesiącu — wejdzie do wypłaty za 16–${endDay}. Teraz: ${pay.machines} aut. = ${money(pay.machinesMoney)}`)}</p>` : ''}
-    ${s.minutes > 0 ? `<p class="muted small">${t('Заработано в час', 'Zarobek na godzinę')}: ≈ ${money(sumMoney(s) / (s.minutes / 60))}</p>` : ''}
     ${paidBlock(p, pay.total)}`;
   return card('money', `${t('К оплате', 'Do wypłaty')} · ${periodTitle(p)}`, '', body);
 }
 
 /* ===================== Экран «Итоги» ===================== */
-function bars(vals, color, h) {
-  const n = vals.length, max = Math.max(1, ...vals), W = 310, slot = W / n, bw = slot * 0.62;
-  let s = '';
+/**
+ * Столбики по дням месяца: выходные слегка подсвечены, сегодня отмечено точкой,
+ * нажатие на день показывает его значение под графиком.
+ */
+function bars(vals, days, color, h, unit) {
+  const n = vals.length, max = Math.max(1, ...vals), W = 310, slot = W / n, bw = Math.min(8, slot * 0.6), td = todayDay(), H = h + 8;
+  let bg = '', s = '', hit = '';
   vals.forEach((v, i) => {
-    const x = (i * slot + (slot - bw) / 2).toFixed(2);
-    s += `<rect x="${x}" y="0" width="${bw.toFixed(2)}" height="${h}" rx="${(bw / 2).toFixed(2)}" fill="var(--card-hi)"/>`;
+    const d = days[i], x0 = i * slot, x = (x0 + (slot - bw) / 2).toFixed(2);
+    if (weekday(d) >= 5) bg += `<rect x="${x0.toFixed(2)}" y="0" width="${slot.toFixed(2)}" height="${h}" fill="var(--card-hi)" opacity=".25"/>`;
     if (v > 0) {
       const bh = Math.max(bw, (h * v) / max);
       s += `<rect class="bv" style="--i:${i}" x="${x}" y="${(h - bh).toFixed(2)}" width="${bw.toFixed(2)}" height="${bh.toFixed(2)}" rx="${(bw / 2).toFixed(2)}" fill="${color}"/>`;
     }
+    if (d === td) s += `<circle cx="${(x0 + slot / 2).toFixed(2)}" cy="${h + 5}" r="2.5" fill="var(--text)"/>`;
+    hit += `<rect class="hit" data-act="bar" data-tip="${shortD(d)} ${weekdayShort(d)} · ${v} ${esc(unit(v))}" x="${x0.toFixed(2)}" y="0" width="${slot.toFixed(2)}" height="${H}"/>`;
   });
-  return `<svg class="bars" viewBox="0 0 ${W} ${h}" role="img">${s}</svg>
+  return `<svg class="bars" viewBox="0 0 ${W} ${H}" role="img">${bg}<line x1="0" y1="${h + .5}" x2="${W}" y2="${h + .5}" stroke="var(--outline-v)"/>${s}${hit}</svg>
     <div class="axis"><span>1</span><span>15</span><span>${n}</span></div>`;
 }
 
@@ -1472,33 +1419,43 @@ function renderStats() {
   const m = sumMoney(s), pm = sumMoney(prev);
   const days = daysOf(p);
   const pts = days.map((e) => entry(e).points), mach = days.map((e) => entry(e).machines);
-  const avgP = s.workDays ? s.points / s.workDays : 0, avgMin = s.workDays ? Math.round(s.minutes / s.workDays) : 0;
+  const avgP = s.workDays ? s.points / s.workDays : 0;
   const bestV = Math.max(0, ...pts), bestI = pts.indexOf(bestV);
   const pct = pm > 0 ? Math.round(((m - pm) / pm) * 100) : null;
+  const head = navHead(monthTitle(mi), t('Итоги месяца', 'Podsumowanie miesiąca'));
 
-  return `
-    ${navHead(monthTitle(mi), t('Итоги месяца', 'Podsumowanie miesiąca'))}
+  // Пустой месяц — вместо таблицы нулей одна понятная карточка
+  if (!s.workDays) {
+    return `${head}
+      <div class="col">
+      <div class="empty">${ic('chart', 40)}<b>${t('В этом месяце пока пусто', 'W tym miesiącu jeszcze pusto')}</b>
+        <span>${t('Впиши точки на вкладке «День» — здесь появятся доход и графики.', 'Wpisz punkty w zakładce «Dzień» — tu pojawią się dochód i wykresy.')}</span></div>
+      ${rankCard()}
+      </div>`;
+  }
+
+  const best = bestV > 0 ? `${t('Лучший день', 'Najlepszy dzień')}: ${shortD(days[bestI])} — ${bestV} ${plPoints(bestV)}` : '';
+  return `${head}
     <div class="col">
     <div class="hero">
       <div class="lbl2">${t('Доход за месяц', 'Dochód za miesiąc')}</div>
       <div class="big" data-count="${m}">${money(m)}</div>
-      ${pct != null ? `<div class="small">${t('Прошлый месяц', 'Poprzedni miesiąc')}: ${money(pm)} (${pct >= 0 ? '+' : ''}${pct}%)</div>` : ''}
+      ${pct != null ? `<div class="small">${pct >= 0 ? '▲' : '▼'} ${pct >= 0 ? '+' : ''}${pct}% ${t('к прошлому месяцу', 'do poprzedniego miesiąca')} (${money(pm)})</div>` : ''}
     </div>
     <div class="tiles">
-      ${tile(t('Точек', 'Punktów'), s.points, money(s.points * S.rates.point))}
-      ${Z() ? tile(t('Автоматов', 'Automatów'), s.machines, money(s.machines * S.rates.machine))
-        : tile(t('Лучший день', 'Najlepszy dzień'), bestV || '—', bestV > 0 ? shortD(days[bestI]) : '')}
+      ${tile(t('Точки', 'Punkty'), s.points, money(s.points * S.rates.point))}
+      ${Z() ? `<div class="zone-z">${tile(t('Жабки', 'Żabki'), s.machines, money(s.machines * S.rates.machine))}</div>`
+        : tile(t('Лучший день', 'Najlepszy dzień'), bestV, shortD(days[bestI]))}
       ${tile(t('Рабочих дней', 'Dni pracy'), s.workDays)}
-      ${tile(t('Точек в день', 'Punktów dziennie'), num(avgP, 1))}
-      ${tile(t('Часов', 'Godzin'), hours(s.minutes), avgMin ? `≈ ${hours(avgMin)} ${t('в день', 'dziennie')}` : '')}
-      ${tile(t('В час', 'Na godzinę'), s.minutes ? money(m / (s.minutes / 60)) : '—')}
+      ${tile(t('В среднем за день', 'Średnio dziennie'), num(avgP, 1), t('точек', 'punktów'))}
     </div>
     </div>
     <div class="col">
-    ${card('chart', t('Точки по дням', 'Punkty dziennie'), '',
-      bars(pts, 'var(--primary)', 130) +
-      (bestV > 0 ? `<p class="muted">${t('Лучший день', 'Najlepszy dzień')}: ${shortD(days[bestI])} — ${bestV}</p>` : ''))}
-    ${Z() ? card('store', t('Жабка по дням', 'Żabka dziennie'), '', bars(mach, 'var(--tertiary)', 90)) : ''}
+    ${card('chart', t('День за днём', 'Dzień po dniu'), '', `
+      <div class="chart-lbl">${t('Точки', 'Punkty')}</div>
+      ${bars(pts, days, 'var(--primary)', 110, plPoints)}
+      ${Z() ? `<div class="chart-lbl z">${t('Жабки', 'Żabki')}</div>${bars(mach, days, 'var(--z)', 60, plZabki)}` : ''}
+      <p class="bar-tip">${best || t('Нажми на столбик — покажу день', 'Dotknij słupka — pokażę dzień')}</p>`)}
     ${rankCard()}
     </div>`;
 }
@@ -1587,8 +1544,8 @@ function renderSettings() {
     <div class="col">
     ${card('doc', t('Шапка отчёта', 'Nagłówek raportu'), '',
       `<textarea class="field" data-field="header" rows="3" placeholder="${t('Имя Фамилия&#10;Код&#10;Номер', 'Imię Nazwisko&#10;Kod&#10;Numer')}">${esc(st.header)}</textarea>
-       <p class="muted small">${t('Эти строки стоят в начале каждого отчёта и в минирапорте. Вторая строка — код для «Start» / «Koniec» в WhatsApp.',
-         'Te linie są na początku każdego raportu i w miniraporcie. Druga linia to kod do «Start» / «Koniec» w WhatsApp.')}</p>`)}
+       <p class="muted small">${t('Эти строки стоят в начале отчёта за период и дневного отчёта. Вторая строка — код бригады.',
+         'Te linie są na początku raportu za okres i raportu dziennego. Druga linia to kod brygady.')}</p>`)}
     ${card('store', t('Автоматы Жабки', 'Automaty Żabki'),
       `<label class="switch"><input type="checkbox" data-check="zabka" ${st.zabka ? 'checked' : ''} aria-label="${t('Автоматы Жабки', 'Automaty Żabki')}"><span></span></label>`,
       `<p class="muted">${t('Включи, если делаешь Жабки. Выключено — Жабок нет на экране «День», в календаре, итогах и отчёте, считаются только точки. Уже записанные Жабки не удаляются.',
@@ -1715,8 +1672,8 @@ function renderSheet() {
   $sheet.innerHTML = `<div class="sheet-bg"><div class="sheet">
     <img class="logo" src="icons/icon-192.png" alt="">
     <h2>${t('Учёт работы', 'Ewidencja pracy')}</h2>
-    <p class="muted">${t('Точки катеринга, часы и готовый отчёт за 15 дней. Делаешь Жабки — включи их в Настройках. Записи хранятся на телефоне и копией на сервере под твоим кодом — при смене телефона ничего не пропадёт.',
-      'Punkty cateringu, godziny i gotowy raport za 15 dni. Robisz Żabki — włącz je w Ustawieniach. Wpisy są w telefonie i w kopii na serwerze pod Twoim kodem — przy zmianie telefonu nic nie zginie.')}</p>
+    <p class="muted">${t('Точки катеринга и готовый отчёт за 15 дней. Делаешь Жабки — включи их в Настройках. Записи хранятся на телефоне и копией на сервере под твоим кодом — при смене телефона ничего не пропадёт.',
+      'Punkty cateringu i gotowy raport za 15 dni. Robisz Żabki — włącz je w Ustawieniach. Wpisy są w telefonie i w kopii na serwerze pod Twoim kodem — przy zmianie telefonu nic nie zginie.')}</p>
     <div class="seg"><button class="${st.lang === 'ru' ? 'on' : ''}" data-act="lang" data-v="ru">Русский</button><button class="${st.lang === 'pl' ? 'on' : ''}" data-act="lang" data-v="pl">Polski</button></div>
     <label class="lbl">${t('Шапка отчёта — будет в начале каждого отчёта', 'Nagłówek raportu — będzie na początku każdego raportu')}</label>
     <textarea class="field" data-field="header" rows="3" placeholder="${t('Имя Фамилия&#10;Код&#10;Номер', 'Imię Nazwisko&#10;Kod&#10;Numer')}">${esc(st.header)}</textarea>
@@ -1746,7 +1703,7 @@ function render(resetScroll) {
   renderTabs();
   renderTop();
   const scroll = $screen.scrollTop;
-  $screen.innerHTML = `<div class="page t${ui.tab}">${TABS[ui.tab].render()}</div>`;
+  $screen.innerHTML = `<div class="page tab${ui.tab}">${TABS[ui.tab].render()}</div>`;
   $screen.scrollTop = resetScroll ? 0 : scroll;
   renderSheet();
   if (ui.tab === 3) loadRank(); // рейтинг команды на «Итогах» (не чаще раза в минуту)
@@ -1880,6 +1837,8 @@ const actions = {
   next() { navigate(1); },
   today() { ui.day = todayDay(); render(true); },
   'open-day'(el) { ui.day = Number(el.dataset.day); ui.tab = 0; render(true); },
+  'p-minus'() { const was = entry(ui.day).points || 0; if (!was) return; update(ui.day, (x) => { x.points = was - 1; }); syncNum('points'); refreshDay(); pulse(document.querySelector('[data-field="points"]')); buzz(8); pointsMoneyFx(was); },
+  'p-plus'() { const was = entry(ui.day).points || 0; if (was >= 9999) return; update(ui.day, (x) => { x.points = was + 1; }); syncNum('points'); refreshDay(); pulse(document.querySelector('[data-field="points"]')); buzz(8); pointsMoneyFx(was); },
   'm-minus'() { update(ui.day, (x) => { x.machines = Math.max(0, x.machines - 1); }); syncNum('machines'); refreshDay(); pulse(document.querySelector('[data-field="machines"]')); buzz(8); },
   'm-plus'() { update(ui.day, (x) => { x.machines += 1; }); syncNum('machines'); refreshDay(); pulse(document.querySelector('[data-field="machines"]')); buzz(8); },
   'mail-open'() { mailOpen(); },
@@ -1913,24 +1872,24 @@ const actions = {
     zrep = { day: ui.day, t: item.t, photos: [] };
     renderZrep();
   },
-  'wa-start'() { waStartEnd('start', 'Start'); },
-  'wa-end'() { waStartEnd('end', 'Koniec'); },
   'wa-mini'() {
     if (!teamCode()) { toast(t('Сначала заполни «Шапку отчёта» в Настройках', 'Najpierw uzupełnij «Nagłówek raportu» w Ustawieniach')); return; }
     if (!entry(ui.day).points) { toast(t('Сначала впиши точки за этот день', 'Najpierw wpisz punkty za ten dzień')); return; }
     openWhatsApp(miniReport(ui.day));
   },
-  'clear-time'() { update(ui.day, (x) => { x.start = null; x.end = null; }); refreshDay(); },
   rep(el) {
     const k = el.dataset.k, o = S.report;
-    const others = ['points', 'machines', 'hours'].filter((n) => n !== k && (n !== 'machines' || Z())).some((n) => o[n]);
-    if (o[k] && !others) return; // хотя бы один пункт должен остаться
+    const other = k === 'points' ? o.machines && Z() : o.points;
+    if (o[k] && !other) return; // хотя бы один пункт должен остаться
     o[k] = !o[k]; save(); render();
   },
-  'rep-lang'(el) { S.report.polish = el.dataset.k === 'pl'; save(); render(); },
-  async 'share-report'() { if (await shareText(buildReport(periodFromIndex(ui.period)))) celebrate(false); },
-  async 'copy-report'() { if (await copyText(buildReport(periodFromIndex(ui.period)))) { toast(t('Отчёт скопирован', 'Raport skopiowany')); celebrate(false); } },
-  'toggle-report'() { ui.showReport = !ui.showReport; render(); },
+  async 'copy-report'() { if (await copyText(buildReport(periodFromIndex(ui.period)))) { toast(t('Отчёт скопирован — вставь его в чат', 'Raport skopiowany — wklej go na czacie')); celebrate(false); } },
+  bar(el) {
+    const tip = el.closest('.card').querySelector('.bar-tip');
+    if (tip) { tip.textContent = el.dataset.tip; tip.classList.add('on'); }
+    el.closest('svg').querySelectorAll('.hit.sel').forEach((r) => r.classList.remove('sel'));
+    el.classList.add('sel');
+  },
   lang(el) { S.settings.lang = el.dataset.v; save(); if (locked()) $sheet.innerHTML = ''; render(); },
   async activate() {
     const inp = document.getElementById('lock-code');
@@ -2054,23 +2013,15 @@ document.addEventListener('input', (ev) => {
 document.addEventListener('input', (ev) => {
   const el = ev.target;
   if (el.dataset.field && fields[el.dataset.field]) fields[el.dataset.field](el);
-  if (el.dataset.time !== undefined) onTime(el);
 });
 
 document.addEventListener('change', (ev) => {
   const el = ev.target;
-  if (el.dataset.time !== undefined) onTime(el);
   if (el.dataset.date !== undefined && el.value) { ui.day = fromIso(el.value); render(true); }
   if (el.dataset.check === 'zabka') { S.settings.zabka = el.checked; metaChanged(); save(); render(); }
   if (el.dataset.field === 'rate-point' || el.dataset.field === 'rate-machine') render();
 });
 
-function onTime(el) {
-  const which = el.dataset.time;
-  const m = parseClock(el.value);
-  update(ui.day, (x) => { x[which] = m; });
-  refreshDay();
-}
 
 /* ===================== Запуск ===================== */
 darkMq.addEventListener('change', () => { if (S.settings.theme === 'system') applyTheme(); });

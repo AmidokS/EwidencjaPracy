@@ -9,6 +9,7 @@
   --sc: hsl(var(--h) calc(35% * var(--k)) 90%);
   --on-sc: hsl(var(--h) calc(45% * var(--k)) 14%);
   --tertiary: hsl(calc(var(--h) + 45) calc(45% * var(--k)) 36%);
+  --z: var(--tertiary); /* свой цвет всего, что про Жабки */
   --bg: hsl(var(--h) calc(25% * var(--k)) 97.5%);
   --card: hsl(var(--h) calc(20% * var(--k)) 93.5%);
   --card-hi: hsl(var(--h) calc(16% * var(--k)) 89.5%);
@@ -482,14 +483,14 @@ span.shake { display: inline-block; }
   .page-title { margin-top: 4px; }
 
   /* Календарь крупнее, итоги половин месяца — справа */
-  .page.t1 { grid-template-columns: minmax(0, 2fr) minmax(0, 1fr); }
-  .page.t1 .cell { height: 84px; }
-  .page.t1 .cell b { font-size: 17px; }
-  .page.t1 .cp { font-size: 13px; }
-  .page.t1 .cm { font-size: 12px; }
+  .page.tab1 { grid-template-columns: minmax(0, 2fr) minmax(0, 1fr); }
+  .page.tab1 .cell { height: 84px; }
+  .page.tab1 .cell b { font-size: 17px; }
+  .page.tab1 .cp { font-size: 13px; }
+  .page.tab1 .cm { font-size: 12px; }
 
-  /* «По дням» в отчёте — справа, рядом с итогами */
-  .page.t2 .col:last-child .card { position: sticky; top: 0; }
+  /* Итог периода слева «прилипает», пока листаешь отчёт */
+  .page.tab2 .col:first-of-type .hero { position: sticky; top: 0; }
 
   #toast { bottom: 32px; left: calc(50% + 124px); }
   .sheet-bg { align-items: center; }
@@ -507,3 +508,72 @@ span.shake { display: inline-block; }
   .btn:hover, .round:hover, .step:hover, .chip:hover, .chip-btn:hover, .swatch:hover { filter: brightness(1.07); }
   .tab, .cell, .trow, .btn, .round, .step { transition: background .15s, filter .15s; }
 }
+
+/* ---------- Жабки: свой оттенок (значки, кнопки −/+, чипы внутри блока) ---------- */
+.zone-z {
+  display: flex; flex-direction: column; gap: 12px;
+  --pc: hsl(calc(var(--h) + 45) calc(55% * var(--k)) 88%);
+  --on-pc: hsl(calc(var(--h) + 45) calc(70% * var(--k)) 16%);
+  --sc: hsl(calc(var(--h) + 45) calc(30% * var(--k)) 90%);
+  --on-sc: hsl(calc(var(--h) + 45) calc(45% * var(--k)) 16%);
+}
+:root[data-dark="1"] .zone-z {
+  --pc: hsl(calc(var(--h) + 45) calc(40% * var(--k)) 26%);
+  --on-pc: hsl(calc(var(--h) + 45) calc(55% * var(--k)) 88%);
+  --sc: hsl(calc(var(--h) + 45) calc(18% * var(--k)) 24%);
+  --on-sc: hsl(calc(var(--h) + 45) calc(30% * var(--k)) 90%);
+}
+.zone-z { --primary: var(--tertiary); }
+.link .ic { display: inline-block; }
+.tiles .zone-z > .tile { height: 100%; }
+.tiles .zone-z .tile .v { color: var(--z); }
+
+/* ---------- День: две кнопки-действия ---------- */
+.actions2 { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+.act-tile {
+  display: flex; flex-direction: column; align-items: flex-start; gap: 4px; text-align: left;
+  background: var(--card); border: 0; border-radius: 20px; padding: 14px 16px; color: var(--text); min-width: 0;
+}
+.act-tile .ic { color: var(--primary); margin-bottom: 4px; }
+.act-tile b { font-size: 15px; font-weight: 650; }
+.act-tile span { font-size: 12px; color: var(--text2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 100%; }
+.act-tile:active { transform: scale(.97); }
+
+/* ---------- Отчёт: как сообщение в чате ---------- */
+.big-btn { padding: 16px; font-size: 17px; }
+.warn { display: flex; align-items: center; gap: 8px; background: var(--error-bg); color: var(--error); border-radius: 14px; padding: 8px 12px; font-size: 14px; }
+.warn .link { color: inherit; text-decoration: underline; padding: 0 2px; font-size: 14px; }
+.rep-bubble {
+  background: var(--card-hi); border-radius: 18px 18px 18px 6px; padding: 12px 14px;
+  font-size: 14px; line-height: 1.45; user-select: text; -webkit-user-select: text;
+}
+.rl { display: block; width: 100%; text-align: left; background: none; border: 0; padding: 1px 4px; margin: 0 -4px; border-radius: 6px; color: var(--text); font: inherit; }
+button.rl:active { background: var(--outline-v); }
+.rl.off { color: var(--text2); }
+.rl.head, .rl.title, .rl.sum { font-weight: 650; }
+.rl.today { color: var(--primary); font-weight: 650; }
+.rl-gap { height: 8px; }
+
+/* ---------- Календарь: тепловая карта ---------- */
+.cell.work { background: color-mix(in srgb, var(--primary) calc(var(--heat, 30%) * .62), var(--card)); }
+.cell.work .cp { color: var(--text); }
+.cell.we:not(.work) b { color: var(--text2); }
+.cm { color: var(--z); font-weight: 700; }
+.heat-scale { display: inline-flex; align-items: center; gap: 6px; }
+.heat-scale i { width: 46px; height: 8px; border-radius: 4px; margin: 0 !important;
+  background: linear-gradient(90deg, color-mix(in srgb, var(--primary) 11%, var(--card)), color-mix(in srgb, var(--primary) 43%, var(--card))); }
+.legend { justify-content: space-between; align-items: center; }
+
+/* ---------- Итоги ---------- */
+.chart-lbl { font-size: 13px; font-weight: 650; color: var(--text2); margin-bottom: -6px; }
+.chart-lbl.z { color: var(--z); margin-top: 6px; }
+.bars .hit { fill: transparent; cursor: pointer; }
+.bars .hit.sel { fill: var(--text); fill-opacity: .07; }
+.bar-tip { margin: 0; font-size: 14px; color: var(--text2); min-height: 20px; }
+.bar-tip.on { color: var(--text); font-weight: 600; }
+.empty {
+  background: var(--card); border-radius: 24px; padding: 32px 20px; text-align: center;
+  display: flex; flex-direction: column; align-items: center; gap: 8px; color: var(--text2); font-size: 14px; line-height: 1.4;
+}
+.empty .ic { color: var(--primary); opacity: .8; }
+.empty b { color: var(--text); font-size: 17px; }
