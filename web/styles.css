@@ -262,8 +262,38 @@ button:disabled { opacity: .45; cursor: default; }
 .rank-row.up { animation: row-in .35s ease-out both, glow 1.4s .3s ease-out; }
 @keyframes glow { 0% { box-shadow: inset 0 0 0 2px var(--primary); } 100% { box-shadow: inset 0 0 0 2px transparent; } }
 .pop { animation: chip-in .3s ease-out; }
+/* Точки: «+2,90 zł» всплывает и тает */
+.card { position: relative; }
+.fx-money { position: absolute; right: 16px; top: 14px; font: 700 15px var(--rounded); color: var(--primary); pointer-events: none;
+            animation: money-up 1.2s ease-out forwards; }
+.fx-money.neg { color: var(--error); }
+@keyframes money-up { 0% { transform: translateY(10px); opacity: 0; } 20% { transform: none; opacity: 1; } 75% { opacity: 1; } 100% { transform: translateY(-18px); opacity: 0; } }
+/* Календарь: волна дней и «дышащий» сегодняшний день */
+.cal.wave .cell { animation: cell-in .32s ease-out both; animation-delay: calc(var(--i) * 12ms); }
+@keyframes cell-in { from { transform: scale(.8); opacity: 0; } to { transform: none; opacity: 1; } }
+.cell.today { animation: breathe 2.6s ease-in-out infinite; }
+@keyframes breathe { 0%, 100% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--primary) 45%, transparent); } 50% { box-shadow: 0 0 0 5px color-mix(in srgb, var(--primary) 0%, transparent); } }
+/* Сверка: «Brakuje» качается */
+.shake { animation: shake .45s ease-in-out; }
+span.shake { display: inline-block; }
+@keyframes shake { 0%, 100% { transform: none; } 20% { transform: translateX(-6px); } 40% { transform: translateX(6px); } 60% { transform: translateX(-4px); } 80% { transform: translateX(3px); } }
+/* Итоги: столбики растут, «к прошлому месяцу» появляется последним */
+.bars.grow .bv { transform-box: fill-box; transform-origin: bottom; animation: grow .7s cubic-bezier(.2, .9, .3, 1) both; animation-delay: calc(var(--i) * 14ms + var(--t0, 0ms)); }
+@keyframes grow { from { transform: scaleY(0); } to { transform: none; } }
+.hero .small.late { animation: fade-in .4s ease-out both; animation-delay: calc(.8s + var(--t0, 0ms)); }
+@keyframes fade-in { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: none; } }
+/* Объявление выезжает сверху, колокольчик звенит */
+.banner.drop { animation: drop .45s cubic-bezier(.2, 1.2, .4, 1); }
+@keyframes drop { from { transform: translateY(-24px); opacity: 0; } to { transform: none; opacity: 1; } }
+.banner.drop > .ic { transform-origin: 50% 10%; animation: ring .9s .35s ease-in-out; }
+@keyframes ring { 0%, 100% { transform: none; } 15% { transform: rotate(16deg); } 30% { transform: rotate(-14deg); } 45% { transform: rotate(10deg); } 60% { transform: rotate(-6deg); } 75% { transform: rotate(3deg); } }
+/* Вкладки: иконка подпрыгивает */
+.ib.bounce .ic { animation: bounce .45s cubic-bezier(.2, 1.6, .4, 1); }
+@keyframes bounce { 0% { transform: scale(.7); } 60% { transform: scale(1.15); } 100% { transform: none; } }
+
 @media (prefers-reduced-motion: reduce) {
-  .pulse, .znext.enter, .zchip.new, .rank.fresh .rank-row, .rank-row.up, .pop { animation: none !important; }
+  .pulse, .znext.enter, .zchip.new, .rank.fresh .rank-row, .rank-row.up, .pop, .fx-money, .cal.wave .cell, .cell.today,
+  .shake, .bars.grow .bv, .hero .small.late, .banner.drop, .banner.drop > .ic, .ib.bounce .ic { animation: none !important; }
 }
 
 /* Рейтинг команды */

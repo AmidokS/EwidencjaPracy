@@ -2,7 +2,7 @@
 /* Учёт работы — PWA. Создатель: Artur Alimhulov.
    Данные хранятся на телефоне (localStorage) и копией на сервере под кодом доступа (см. «Записи на сервере»). */
 
-const VERSION = '3.9';
+const VERSION = '4.0';
 const STORE_KEY = 'uchet-raboty-v1';
 
 /* ==== calc:begin ====
@@ -472,6 +472,73 @@ function pulse(el) {
   if (!el || calm()) return;
   el.classList.remove('pulse'); void el.offsetWidth; el.classList.add('pulse');
 }
+
+/** Коротко «качнуть» элемент (расхождение в выплате). */
+function shake(el) {
+  if (!el || calm()) return;
+  el.classList.remove('shake'); void el.offsetWidth; el.classList.add('shake');
+  buzz([15, 40, 15]);
+}
+
+/* Точки: через полсекунды после ввода всплывает, сколько это денег («+2,90 zł») */
+let ptsBase = null, ptsTimer = null;
+function pointsMoneyFx(was) {
+  if (ptsBase == null) ptsBase = was;
+  clearTimeout(ptsTimer);
+  ptsTimer = setTimeout(() => {
+    const d = (entry(ui.day).points || 0) - ptsBase;
+    ptsBase = null;
+    if (!d || calm()) return;
+    const card = document.querySelector('[data-field="points"]');
+    const host = card && card.closest('.card');
+    if (!host) return;
+    const el = document.createElement('div');
+    el.className = `fx-money${d < 0 ? ' neg' : ''}`;
+    el.textContent = `${d > 0 ? '+' : '−'}${money(Math.abs(d) * S.rates.point)}`;
+    host.appendChild(el);
+    setTimeout(() => el.remove(), 1300);
+  }, 450);
+}
+
+/* Календарь: дни появляются волной, только когда открыли другой месяц */
+let calShown = null;
+function calWave(mi) {
+  const wave = calShown !== null && calShown !== mi && !calm();
+  calShown = mi;
+  return wave ? 'wave' : '';
+}
+
+/* Сверка: какое расхождение было в прошлый раз — «качаем» только когда недоплата только что появилась */
+const paidLast = {};
+
+/* Итоги: доход считает от 0, столбики растут — при открытии вкладки или смене месяца */
+// Если вкладку перерисовали посреди анимации (пришёл рейтинг, синхронизация) — продолжаем с того же места.
+let statsShown = null, statsT0 = 0;
+function statsFx() {
+  const now = performance.now();
+  if (statsShown !== ui.stats) { statsShown = ui.stats; statsT0 = now; }
+  const el = now - statsT0;
+  if (el > 1300 || calm()) return;
+  const big = document.querySelector('.hero .big[data-count]');
+  if (big) {
+    const target = Number(big.dataset.count) || 0, dur = 900;
+    const step = (t) => {
+      if (!big.isConnected) return;
+      const k = Math.min(1, Math.max(0, (t - statsT0) / dur)), e = 1 - Math.pow(1 - k, 3);
+      big.textContent = money(target * e);
+      if (k < 1) requestAnimationFrame(step);
+    };
+    step(now);
+    setTimeout(() => { if (big.isConnected) big.textContent = money(target); }, dur - el + 60); // на случай, если кадры не идут (фон)
+  }
+  const off = `${-Math.round(el)}ms`;
+  document.querySelectorAll('svg.bars').forEach((s) => { s.style.setProperty('--t0', off); s.classList.add('grow'); });
+  const sm = document.querySelector('.hero .small');
+  if (sm) { sm.style.setProperty('--t0', off); sm.classList.add('late'); }
+}
+
+let msgShown = null;   // какое объявление уже показывали — «выезжает» только новое
+let tabBounce = false; // иконка вкладки подпрыгивает только при переходе
 
 let zNextShown = ''; // какая Жабка была «Следующей» в прошлый раз — чтобы новая выезжала только при смене
 let zJustSent = '';  // только что отправленная Жабка — её метка «влетает» один раз
@@ -1259,7 +1326,7 @@ function renderCalendar() {
     const cls = ['cell'];
     if (x && isWork(x)) cls.push('work');
     if (d === td) cls.push('today');
-    cells += `<button class="${cls.join(' ')}" data-act="open-day" data-day="${d}">
+    cells += `<button class="${cls.join(' ')}" data-act="open-day" data-day="${d}" style="--i:${k}">
       <b>${k + 1}</b>
       ${x && x.points ? `<span class="cp">${x.points}</span>` : ''}
       ${Z() && x && x.machines ? `<span class="cm">Ż${x.machines}</span>` : ''}
@@ -1271,7 +1338,7 @@ function renderCalendar() {
   return `
     ${navHead(monthTitle(mi), t('Нажми на день, чтобы изменить', 'Dotknij dnia, aby edytować'))}
     <div class="col wide">
-    <div class="cal-wrap"><div class="cal-head">${heads}</div><div class="cal">${cells}</div></div>
+    <div class="cal-wrap"><div class="cal-head">${heads}</div><div class="cal ${calWave(mi)}">${cells}</div></div>
     <div class="legend">
       <span><i style="background:var(--primary)"></i>${t('точки', 'punkty')}</span>
       ${Z() ? `<span><i style="background:var(--tertiary)"></i>${t('Жабка', 'Żabka')}</span>` : ''}    </div>
@@ -1393,7 +1460,7 @@ function bars(vals, color, h) {
     s += `<rect x="${x}" y="0" width="${bw.toFixed(2)}" height="${h}" rx="${(bw / 2).toFixed(2)}" fill="var(--card-hi)"/>`;
     if (v > 0) {
       const bh = Math.max(bw, (h * v) / max);
-      s += `<rect x="${x}" y="${(h - bh).toFixed(2)}" width="${bw.toFixed(2)}" height="${bh.toFixed(2)}" rx="${(bw / 2).toFixed(2)}" fill="${color}"/>`;
+      s += `<rect class="bv" style="--i:${i}" x="${x}" y="${(h - bh).toFixed(2)}" width="${bw.toFixed(2)}" height="${bh.toFixed(2)}" rx="${(bw / 2).toFixed(2)}" fill="${color}"/>`;
     }
   });
   return `<svg class="bars" viewBox="0 0 ${W} ${h}" role="img">${s}</svg>
@@ -1414,7 +1481,7 @@ function renderStats() {
     <div class="col">
     <div class="hero">
       <div class="lbl2">${t('Доход за месяц', 'Dochód za miesiąc')}</div>
-      <div class="big">${money(m)}</div>
+      <div class="big" data-count="${m}">${money(m)}</div>
       ${pct != null ? `<div class="small">${t('Прошлый месяц', 'Poprzedni miesiąc')}: ${money(pm)} (${pct >= 0 ? '+' : ''}${pct}%)</div>` : ''}
     </div>
     <div class="tiles">
@@ -1583,7 +1650,9 @@ function renderTop() {
   }
   const msg = AUTH_API && S.auth.ok && S.auth.cfg && S.auth.cfg.msg;
   if (msg && msg.text && msg.id !== S.msgHidden) {
-    html += `<div class="banner">${ic('bell', 20)}<div class="bt"><b>${t('Объявление', 'Ogłoszenie')}</b><p>${esc(msg.text)}</p></div>
+    const drop = msgShown !== msg.id && !calm() ? ' drop' : '';
+    msgShown = msg.id;
+    html +=`<div class="banner${drop}">${ic('bell', 20)}<div class="bt"><b>${t('Объявление', 'Ogłoszenie')}</b><p>${esc(msg.text)}</p></div>
       <button class="x" data-act="hide-msg" data-id="${msg.id}" aria-label="${t('Закрыть', 'Zamknij')}">${ic('x', 18)}</button></div>`;
   }
   if (AUTH_API && S.auth.ok && S.auth.expires) {
@@ -1669,7 +1738,7 @@ function renderTabs() {
   // На компьютере меню слева, сверху — название приложения (на телефоне скрыто)
   $tabs.innerHTML = `<div class="brand"><img src="icons/icon-192.png" alt=""><div><b>Ewidencja Pracy</b>${S.auth.name ? `<span>${esc(S.auth.name)}</span>` : ''}</div></div>` +
     TABS.map((tb, i) =>
-      `<button class="tab ${i === ui.tab ? 'on' : ''}" data-act="tab" data-v="${i}"><span class="ib">${ic(tb.icon, 22)}</span><span>${t(tb.ru, tb.pl)}</span></button>`).join('');
+      `<button class="tab ${i === ui.tab ? 'on' : ''}" data-act="tab" data-v="${i}"><span class="ib${i === ui.tab && tabBounce && !calm() ? ' bounce' : ''}">${ic(tb.icon, 22)}</span><span>${t(tb.ru, tb.pl)}</span></button>`).join('');
 }
 
 function render(resetScroll) {
@@ -1681,6 +1750,8 @@ function render(resetScroll) {
   $screen.scrollTop = resetScroll ? 0 : scroll;
   renderSheet();
   if (ui.tab === 3) loadRank(); // рейтинг команды на «Итогах» (не чаще раза в минуту)
+  if (ui.tab === 3) statsFx(); else statsShown = null;
+  tabBounce = false;
 }
 
 /* Листание: анимация ухода старой страницы и прихода новой */
@@ -1781,9 +1852,10 @@ async function copyText(text) {
 
 async function shareText(text) {
   if (navigator.share) {
-    try { await navigator.share({ text }); return; } catch (e) { if (e && e.name === 'AbortError') return; }
+    try { await navigator.share({ text }); return true; } catch (e) { if (e && e.name === 'AbortError') return false; }
   }
-  if (await copyText(text)) toast(t('Отчёт скопирован', 'Raport skopiowany'));
+  if (await copyText(text)) { toast(t('Отчёт скопирован', 'Raport skopiowany')); return true; }
+  return false;
 }
 
 /** Скачать файл (или «Поделиться» на телефоне). Нужно для «Сохранить мои записи» на экране входа. */
@@ -1803,7 +1875,7 @@ async function shareFile(name, content, type) {
 const actions = {
   // Человек без доступа (код отключён / нет интернета) всё равно может забрать свои записи
   backup() { shareFile(`uchet-raboty-${iso(todayDay())}.json`, JSON.stringify({ app: 'uchet-raboty', version: VERSION, entries: S.entries, rates: S.rates, header: S.settings.header || '', paid: S.paid }, null, 1), 'application/json'); },
-  tab(el) { const v = Number(el.dataset.v); if (v !== ui.tab) { ui.tab = v; if (v === 0) ui.day = ui.day; render(true); } else if (v === 0 && ui.day !== todayDay()) { ui.day = todayDay(); render(true); } },
+  tab(el) { const v = Number(el.dataset.v); if (v !== ui.tab) { ui.tab = v; tabBounce = true; if (v === 0) ui.day = ui.day; render(true); } else if (v === 0 && ui.day !== todayDay()) { ui.day = todayDay(); render(true); } },
   prev() { navigate(-1); },
   next() { navigate(1); },
   today() { ui.day = todayDay(); render(true); },
@@ -1856,8 +1928,8 @@ const actions = {
     o[k] = !o[k]; save(); render();
   },
   'rep-lang'(el) { S.report.polish = el.dataset.k === 'pl'; save(); render(); },
-  'share-report'() { shareText(buildReport(periodFromIndex(ui.period))); },
-  async 'copy-report'() { if (await copyText(buildReport(periodFromIndex(ui.period)))) toast(t('Отчёт скопирован', 'Raport skopiowany')); },
+  async 'share-report'() { if (await shareText(buildReport(periodFromIndex(ui.period)))) celebrate(false); },
+  async 'copy-report'() { if (await copyText(buildReport(periodFromIndex(ui.period)))) { toast(t('Отчёт скопирован', 'Raport skopiowany')); celebrate(false); } },
   'toggle-report'() { ui.showReport = !ui.showReport; render(); },
   lang(el) { S.settings.lang = el.dataset.v; save(); if (locked()) $sheet.innerHTML = ''; render(); },
   async activate() {
@@ -1929,7 +2001,7 @@ function syncNum(field) {
 }
 
 const fields = {
-  points(el) { const v = el.value.replace(/\D/g, '').slice(0, 4); if (v !== el.value) el.value = v; update(ui.day, (x) => { x.points = Number(v) || 0; }); refreshDay(); },
+  points(el) { const v = el.value.replace(/\D/g, '').slice(0, 4); if (v !== el.value) el.value = v; const was = entry(ui.day).points || 0; update(ui.day, (x) => { x.points = Number(v) || 0; }); refreshDay(); pointsMoneyFx(was); },
   machines(el) { const v = el.value.replace(/\D/g, '').slice(0, 3); if (v !== el.value) el.value = v; update(ui.day, (x) => { x.machines = Number(v) || 0; }); refreshDay(); },
   header(el) { S.settings.header = el.value; metaChanged(); save(); },
   zlist(el) { S.settings.zlist = el.value.split('\n').map((s) => s.trim()).filter(Boolean).slice(0, 60); metaChanged(); save(); },
@@ -1944,6 +2016,9 @@ const fields = {
     const p = payPeriod(fromIso(k));
     const d = document.getElementById(`paid-diff-${k}`);
     if (d) d.innerHTML = paidDiffHtml(payout(p).total, paidOf(p));
+    const st = paidOf(p) == null ? '' : reconcile(payout(p).total, paidOf(p)).status;
+    if (st === 'less' && paidLast[k] !== 'less' && d) shake(d.firstElementChild);
+    paidLast[k] = st;
   },
 };
 
