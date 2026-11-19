@@ -2,7 +2,7 @@
 /* Учёт работы — PWA. Создатель: Artur Alimhulov.
    Данные хранятся на телефоне (localStorage) и копией на сервере под кодом доступа (см. «Записи на сервере»). */
 
-const VERSION = '3.8';
+const VERSION = '3.9';
 const STORE_KEY = 'uchet-raboty-v1';
 
 /* ==== calc:begin ====
@@ -438,6 +438,44 @@ document.addEventListener('change', (ev) => {
 });
 document.addEventListener('keydown', (ev) => { if (mail && ev.key === 'Escape') mailClose(); });
 
+/* ===================== Анимации ===================== */
+/* Небольшие «награды»: галочка при отправке отчёта, конфетти, когда отправлены все Жабки дня,
+   короткая вибрация. Если в телефоне выключены анимации — всё без движения. */
+const calm = () => window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+const buzz = (pattern) => { try { if (navigator.vibrate) navigator.vibrate(pattern); } catch (e) { /* нет вибро */ } };
+
+function celebrate(all) {
+  buzz(all ? [20, 60, 30, 60, 40] : 25);
+  if (calm()) return;
+  const fx = document.createElement('div');
+  fx.className = 'fx';
+  fx.innerHTML = `<div class="fx-check">${ic('check', 46)}</div>`;
+  if (all) {
+    const colors = ['var(--primary)', '#f5c542', '#ef6f6c', '#5aa9e6', '#9b7fe6'];
+    for (let i = 0; i < 36; i++) {
+      const c = document.createElement('i');
+      c.className = 'fx-bit';
+      c.style.setProperty('--x', `${Math.round((Math.random() - 0.5) * 520)}px`);
+      c.style.setProperty('--y', `${Math.round(-140 - Math.random() * 300)}px`);
+      c.style.setProperty('--r', `${Math.round(Math.random() * 720 - 360)}deg`);
+      c.style.background = colors[i % colors.length];
+      c.style.animationDelay = `${Math.round(Math.random() * 120)}ms`;
+      fx.appendChild(c);
+    }
+  }
+  document.body.appendChild(fx);
+  setTimeout(() => fx.remove(), all ? 1700 : 1000);
+}
+
+/** Коротко «пульснуть» элемент (число, счётчик). */
+function pulse(el) {
+  if (!el || calm()) return;
+  el.classList.remove('pulse'); void el.offsetWidth; el.classList.add('pulse');
+}
+
+let zNextShown = ''; // какая Жабка была «Следующей» в прошлый раз — чтобы новая выезжала только при смене
+let zJustSent = '';  // только что отправленная Жабка — её метка «влетает» один раз
+
 /* ===================== Жабки: план на день и отчёты в WhatsApp ===================== */
 /* У каждого свой список Жабок (Настройки, или владелец в админке) — по строке на Жабку,
    например «Bosch, Warszawa, Jutrzenki 105, ZG356-1». Вечером отмечаешь, какие Жабки в этот день.
@@ -473,7 +511,10 @@ function zabkiCard(d) {
     const next = todo[0];
     body = `${next ? (() => {
         const p = zParts(next.i.t);
-        return `<div class="znext">
+        // Выезжает снизу, только когда «Следующей» стала другая Жабка (а не при каждой перерисовке)
+        const enter = zNextShown && zNextShown !== next.i.t ? ' enter' : '';
+        zNextShown = next.i.t;
+        return `<div class="znext${enter}">
           <div class="znext-lbl">${t('Следующая', 'Następna')} · ${next.n + 1}</div>
           <div class="zt"><b>${esc(p.code)}</b>${p.rest ? `<small>${esc(p.rest)}</small>` : ''}</div>
           <button class="zb" data-act="z-rep" data-n="${next.n}">${ic('camera', 16)} Raport przed/po</button>
@@ -485,7 +526,7 @@ function zabkiCard(d) {
           <span class="zq-n">${n + 1}</span><b>${esc(p.code)}</b><small>${esc(p.street)}</small>${ic('camera', 16)}</button>`;
       }).join('')}</div>` : ''}
       ${sent.length ? `<div class="zdone">${sent.map(({ i, n }) =>
-        `<button class="zchip" data-act="z-rep" data-n="${n}" title="${esc(i.t)}">${ic('check', 14)} ${esc(zParts(i.t).code)}</button>`).join('')}</div>` : ''}
+        `<button class="zchip${i.t === zJustSent ? ' new' : ''}" data-act="z-rep" data-n="${n}" title="${esc(i.t)}">${ic('check', 14)} ${esc(zParts(i.t).code)}</button>`).join('')}</div>` : ''}
       <div class="zlinks"><button class="link" data-act="z-pick">${t('Изменить выбор', 'Zmień wybór')}</button>${weekBtn}</div>`;
   }
   return card('store', t('Отчёты Жабок', 'Raporty Żabek'),
@@ -671,7 +712,15 @@ async function zrepSend(btn) {
   }
   zMark(day, zt, true);
   zrepClose();
-  if (ui.tab === 0 && ui.day === day) render();
+  zJustSent = zt;
+  setTimeout(() => { zJustSent = ''; }, 600);
+  const plan = entry(day).z || [];
+  const allDone = plan.length > 0 && plan.every((i) => i.a);
+  celebrate(allDone);
+  if (ui.tab === 0 && ui.day === day) {
+    render();
+    if (allDone) pulse(document.querySelector('.zcount'));
+  }
 }
 
 document.addEventListener('click', (ev) => {
@@ -1304,7 +1353,7 @@ const paidInputValue = (v) => (v == null ? '' : v.toFixed(2).replace('.', ','));
 function paidDiffHtml(expected, paid) {
   if (paid == null) return `<span class="muted small">${t('Впиши сумму, когда придут деньги, — сравню с расчётом.', 'Wpisz kwotę, gdy przyjdą pieniądze — porównam z wyliczeniem.')}</span>`;
   const r = reconcile(expected, paid);
-  if (r.status === 'ok') return `<span class="paid-ok">${ic('check', 16)} ${t('Сходится с расчётом', 'Zgadza się z wyliczeniem')}</span>`;
+  if (r.status === 'ok') return `<span class="paid-ok pop">${ic('check', 16)} ${t('Сходится с расчётом', 'Zgadza się z wyliczeniem')}</span>`;
   if (r.status === 'less') return `<span class="paid-less">${t('Недоплатили', 'Brakuje')} ${money(-r.diff)}</span>`;
   return `<span class="paid-more">${t('Пришло больше на', 'Wpłynęło więcej o')} ${money(r.diff)}</span>`;
 }
@@ -1391,6 +1440,7 @@ function renderStats() {
 /* Только по желанию: пока не включил участие — тебя нет в рейтинге и ты его не видишь.
    Другим видно лишь твоё имя, точки и Жабки — без денег, кода и заметок. */
 let rankState = { key: '', items: null, joined: true, err: false, loading: false, at: 0 };
+let rankShownAt = 0, rankLastPlace = 0; // для анимации: когда показывали и на каком месте был ты
 
 function rankRange() {
   if ((ui.rankPer || 'week') === 'month') return monthPeriod(ui.stats);
@@ -1429,7 +1479,12 @@ function rankCard() {
   else if (!rankState.items.length) list = `<p class="muted small">${t('Пока никто не участвует', 'Na razie nikt nie bierze udziału')}</p>`;
   else {
     const rows = [...rankState.items].sort((a, b) => (b[by] - a[by]) || (b.p - a.p));
-    list = `<div class="rank">${rows.map((x, i) => `<div class="rank-row ${x.me ? 'me' : ''}">
+    // Строки появляются по очереди — только когда данные только что пришли; поднялся выше — своя строка вспыхивает
+    const fresh = rankState.at !== rankShownAt;
+    const myPlace = rows.findIndex((x) => x.me) + 1;
+    const up = fresh && rankLastPlace && myPlace && myPlace < rankLastPlace;
+    if (fresh) { rankShownAt = rankState.at; if (myPlace) rankLastPlace = myPlace; }
+    list = `<div class="rank ${fresh && !calm() ? 'fresh' : ''}">${rows.map((x, i) => `<div class="rank-row ${x.me ? 'me' : ''} ${x.me && up ? 'up' : ''}" style="--i:${i}">
         <span class="rank-n ${i < 3 ? `top${i + 1}` : ''}">${i + 1}</span>
         <span class="rank-name">${esc(x.name)}${x.me ? ` · ${t('ты', 'Ty')}` : ''}</span>
         <b>${by === 'p' ? x.p : x.m}</b>
@@ -1753,8 +1808,8 @@ const actions = {
   next() { navigate(1); },
   today() { ui.day = todayDay(); render(true); },
   'open-day'(el) { ui.day = Number(el.dataset.day); ui.tab = 0; render(true); },
-  'm-minus'() { update(ui.day, (x) => { x.machines = Math.max(0, x.machines - 1); }); syncNum('machines'); refreshDay(); },
-  'm-plus'() { update(ui.day, (x) => { x.machines += 1; }); syncNum('machines'); refreshDay(); },
+  'm-minus'() { update(ui.day, (x) => { x.machines = Math.max(0, x.machines - 1); }); syncNum('machines'); refreshDay(); pulse(document.querySelector('[data-field="machines"]')); buzz(8); },
+  'm-plus'() { update(ui.day, (x) => { x.machines += 1; }); syncNum('machines'); refreshDay(); pulse(document.querySelector('[data-field="machines"]')); buzz(8); },
   'mail-open'() { mailOpen(); },
   async 'rank-join'(el) {
     el.disabled = true;

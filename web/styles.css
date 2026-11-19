@@ -236,6 +236,36 @@ button:disabled { opacity: .45; cursor: default; }
 .money-row span:last-child { font-weight: 600; }
 .total { display: flex; justify-content: space-between; align-items: center; border-top: 1px solid var(--outline-v); padding-top: 12px; }
 .total b { font: 650 24px var(--rounded); color: var(--primary); }
+/* ---------- Анимации ---------- */
+.fx { position: fixed; inset: 0; z-index: 90; pointer-events: none; display: grid; place-items: center; }
+.fx-check { width: 96px; height: 96px; border-radius: 50%; display: grid; place-items: center;
+            background: var(--primary); color: var(--on-primary); box-shadow: 0 10px 30px rgba(0, 0, 0, .25);
+            animation: fx-pop .9s cubic-bezier(.2, 1.4, .4, 1) both; }
+.fx-check .ic { stroke-width: 3; stroke-dasharray: 30; stroke-dashoffset: 30; animation: fx-draw .35s .15s ease-out forwards; }
+@keyframes fx-pop { 0% { transform: scale(.3); opacity: 0; } 35% { transform: scale(1.08); opacity: 1; } 70% { transform: scale(1); opacity: 1; } 100% { transform: scale(.9); opacity: 0; } }
+@keyframes fx-draw { to { stroke-dashoffset: 0; } }
+.fx-bit { position: absolute; left: 50%; top: 55%; width: 9px; height: 14px; border-radius: 2px; opacity: 0;
+          animation: fx-fly 1.5s cubic-bezier(.15, .7, .3, 1) forwards; }
+@keyframes fx-fly {
+  0% { transform: translate(-50%, 0) rotate(0); opacity: 1; }
+  60% { opacity: 1; }
+  100% { transform: translate(calc(-50% + var(--x)), calc(var(--y) + 380px)) rotate(var(--r)); opacity: 0; }
+}
+.pulse { animation: pulse .32s ease-out; }
+@keyframes pulse { 0% { transform: scale(1); } 40% { transform: scale(1.14); } 100% { transform: scale(1); } }
+.znext.enter { animation: slide-up .38s cubic-bezier(.2, .9, .3, 1); }
+@keyframes slide-up { from { transform: translateY(18px); opacity: 0; } to { transform: none; opacity: 1; } }
+.zchip.new { animation: chip-in .35s ease-out; }
+@keyframes chip-in { from { transform: scale(.6); opacity: 0; } to { transform: none; opacity: 1; } }
+.rank.fresh .rank-row { animation: row-in .35s ease-out both; animation-delay: calc(var(--i) * 60ms); }
+@keyframes row-in { from { transform: translateX(-12px); opacity: 0; } to { transform: none; opacity: 1; } }
+.rank-row.up { animation: row-in .35s ease-out both, glow 1.4s .3s ease-out; }
+@keyframes glow { 0% { box-shadow: inset 0 0 0 2px var(--primary); } 100% { box-shadow: inset 0 0 0 2px transparent; } }
+.pop { animation: chip-in .3s ease-out; }
+@media (prefers-reduced-motion: reduce) {
+  .pulse, .znext.enter, .zchip.new, .rank.fresh .rank-row, .rank-row.up, .pop { animation: none !important; }
+}
+
 /* Рейтинг команды */
 .rank { display: flex; flex-direction: column; border-radius: 14px; overflow: hidden; background: var(--card-hi); }
 .rank-row { display: grid; grid-template-columns: 28px 1fr auto auto; align-items: center; gap: 10px; padding: 9px 12px; font-size: 15px; }
