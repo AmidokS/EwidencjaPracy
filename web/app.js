@@ -2,7 +2,7 @@
 /* Учёт работы — PWA. Создатель: Artur Alimhulov.
    Данные хранятся на телефоне (localStorage) и копией на сервере под кодом доступа (см. «Записи на сервере»). */
 
-const VERSION = '3.7';
+const VERSION = '3.8';
 const STORE_KEY = 'uchet-raboty-v1';
 
 /* ==== calc:begin ====
@@ -837,6 +837,7 @@ function acceptServer(r) {
   S.auth.expires = r.expires || null;
   if (r.cfg) S.auth.cfg = r.cfg;
   S.auth.owner = !!r.owner;
+  if ('rank' in r) S.auth.rank = !!r.rank;
 }
 
 /* ===================== Записи на сервере (синхронизация) ===================== */
@@ -1382,7 +1383,64 @@ function renderStats() {
       bars(pts, 'var(--primary)', 130) +
       (bestV > 0 ? `<p class="muted">${t('Лучший день', 'Najlepszy dzień')}: ${shortD(days[bestI])} — ${bestV}</p>` : ''))}
     ${Z() ? card('store', t('Жабка по дням', 'Żabka dziennie'), '', bars(mach, 'var(--tertiary)', 90)) : ''}
+    ${rankCard()}
     </div>`;
+}
+
+/* ===================== Рейтинг команды ===================== */
+/* Только по желанию: пока не включил участие — тебя нет в рейтинге и ты его не видишь.
+   Другим видно лишь твоё имя, точки и Жабки — без денег, кода и заметок. */
+let rankState = { key: '', items: null, joined: true, err: false, loading: false, at: 0 };
+
+function rankRange() {
+  if ((ui.rankPer || 'week') === 'month') return monthPeriod(ui.stats);
+  const td = todayDay(), start = td - weekday(td);
+  return { start, end: start + 6 };
+}
+
+async function loadRank(force) {
+  if (!AUTH_API || !S.auth.ok || !S.auth.rank || rankState.loading) return;
+  const p = rankRange(), key = `${iso(p.start)}|${iso(p.end)}`;
+  if (!force && rankState.key === key && Date.now() - rankState.at < 60000) return;
+  rankState.loading = true;
+  try {
+    const r = await api('/rank', { code: S.auth.code, device: deviceId(), from: iso(p.start), to: iso(p.end) });
+    rankState = { key, items: (r && r.items) || [], joined: !!(r && r.joined), err: !(r && r.ok), loading: false, at: Date.now() };
+    if (r && r.joined === false) { S.auth.rank = false; save(); }
+  } catch (e) {
+    rankState = { ...rankState, key, err: true, loading: false, at: Date.now() };
+  }
+  if (ui.tab === 3) render();
+}
+
+function rankCard() {
+  if (!AUTH_API || !S.auth.ok) return '';
+  const title = t('Рейтинг команды', 'Ranking zespołu');
+  if (!S.auth.rank) {
+    return card('chart', title, '', `<p class="muted">${t('Сравни свои точки и Жабки с коллегами за неделю или месяц. Участие по желанию: другим видно только твоё имя, точки и Жабки — без денег.',
+      'Porównaj swoje punkty i Żabki z kolegami za tydzień lub miesiąc. Udział dobrowolny: inni widzą tylko Twoje imię, punkty i Żabki — bez pieniędzy.')}</p>
+      <button class="btn tonal" data-act="rank-join">${ic('chart', 18)} ${t('Участвовать', 'Dołącz')}</button>`);
+  }
+  const per = ui.rankPer || 'week', by = Z() ? (ui.rankBy || 'p') : 'p';
+  const seg = (act, v, label, on) => `<button class="${on ? 'on' : ''}" data-act="${act}" data-v="${v}">${label}</button>`;
+  const p = rankRange(), key = `${iso(p.start)}|${iso(p.end)}`;
+  let list;
+  if (rankState.key !== key || rankState.items == null) list = `<p class="muted small">${rankState.err ? t('Нет связи с сервером', 'Brak połączenia z serwerem') : t('Загружаю…', 'Wczytuję…')}</p>`;
+  else if (!rankState.items.length) list = `<p class="muted small">${t('Пока никто не участвует', 'Na razie nikt nie bierze udziału')}</p>`;
+  else {
+    const rows = [...rankState.items].sort((a, b) => (b[by] - a[by]) || (b.p - a.p));
+    list = `<div class="rank">${rows.map((x, i) => `<div class="rank-row ${x.me ? 'me' : ''}">
+        <span class="rank-n ${i < 3 ? `top${i + 1}` : ''}">${i + 1}</span>
+        <span class="rank-name">${esc(x.name)}${x.me ? ` · ${t('ты', 'Ty')}` : ''}</span>
+        <b>${by === 'p' ? x.p : x.m}</b>
+        ${Z() ? `<small>${by === 'p' ? `Ż ${x.m}` : `${x.p} ${t('т.', 'pkt')}`}</small>` : ''}
+      </div>`).join('')}</div>`;
+  }
+  return card('chart', title, '', `
+    <div class="seg">${seg('rank-per', 'week', t('Неделя', 'Tydzień'), per === 'week')}${seg('rank-per', 'month', monthTitle(ui.stats), per === 'month')}</div>
+    ${Z() ? `<div class="chips">${['p', 'm'].map((v) => `<button class="chip ${by === v ? 'on' : ''}" data-act="rank-by" data-v="${v}">${v === 'p' ? t('По точкам', 'Wg punktów') : t('По Жабкам', 'Wg Żabek')}</button>`).join('')}</div>` : ''}
+    ${list}
+    <button class="link" data-act="rank-leave">${t('Выйти из рейтинга', 'Opuść ranking')}</button>`);
 }
 
 /* ===================== Экран «Настройки» ===================== */
@@ -1567,6 +1625,7 @@ function render(resetScroll) {
   $screen.innerHTML = `<div class="page t${ui.tab}">${TABS[ui.tab].render()}</div>`;
   $screen.scrollTop = resetScroll ? 0 : scroll;
   renderSheet();
+  if (ui.tab === 3) loadRank(); // рейтинг команды на «Итогах» (не чаще раза в минуту)
 }
 
 /* Листание: анимация ухода старой страницы и прихода новой */
@@ -1697,6 +1756,25 @@ const actions = {
   'm-minus'() { update(ui.day, (x) => { x.machines = Math.max(0, x.machines - 1); }); syncNum('machines'); refreshDay(); },
   'm-plus'() { update(ui.day, (x) => { x.machines += 1; }); syncNum('machines'); refreshDay(); },
   'mail-open'() { mailOpen(); },
+  async 'rank-join'(el) {
+    el.disabled = true;
+    try {
+      const r = await api('/rank/join', { code: S.auth.code, device: deviceId(), on: true });
+      if (r && r.ok) { S.auth.rank = true; save(); rankState.key = ''; render(); loadRank(true); return; }
+    } catch (e) { /* нет связи */ }
+    el.disabled = false;
+    toast(t('Нет связи с сервером', 'Brak połączenia z serwerem'));
+  },
+  async 'rank-leave'() {
+    if (!confirm(t('Выйти из рейтинга? Тебя больше не будет видно коллегам, и рейтинг скроется.', 'Opuścić ranking? Koledzy nie będą Cię widzieć, a ranking się ukryje.'))) return;
+    try {
+      const r = await api('/rank/join', { code: S.auth.code, device: deviceId(), on: false });
+      if (r && r.ok) { S.auth.rank = false; save(); render(); return; }
+    } catch (e) { /* нет связи */ }
+    toast(t('Нет связи с сервером', 'Brak połączenia z serwerem'));
+  },
+  'rank-per'(el) { ui.rankPer = el.dataset.v; render(); loadRank(); },
+  'rank-by'(el) { ui.rankBy = el.dataset.v; render(); },
   'z-pick'() { zpick = true; render(); },
   'z-pick-done'() { zpick = false; render(); },
   'z-all'(el) { zAll(ui.day, el.dataset.on === '1'); render(); },
