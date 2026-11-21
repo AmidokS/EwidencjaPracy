@@ -3,7 +3,7 @@
 /* Учёт работы — PWA. Создатель: Artur Alimhulov.
    Данные хранятся на телефоне (localStorage) и копией на сервере под кодом доступа (см. «Записи на сервере»). */
 
-const VERSION = '4.9';
+const VERSION = '4.10';
 const STORE_KEY = 'uchet-raboty-v1';
 
 /* ==== calc:begin ====
@@ -248,7 +248,7 @@ function update(e, fn) {
     У каждого поля своё время: правка одного поля здесь и другого в админке не перетирают друг друга. */
 function metaChanged(field) {
   const now = nowU();
-  S.sync.metaU = now;
+  // Время ставим только этому полю: остальные поля не должны «стать новее» и перетереть чужие правки
   S.sync.metaFu = { ...(S.sync.metaFu || {}), [field]: now };
   S.sync.metaDirty = true;
   syncSoon();
@@ -1092,7 +1092,7 @@ async function pushOn() {
   if (!sub) sub = await reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: key });
   const r = await api('/push/subscribe', { code: S.auth.code, device: deviceId(), sub: sub.toJSON() });
   if (!r || !r.ok) return 'error';
-  S.push = { on: true, endpoint: sub.endpoint };
+  S.push = { on: true, endpoint: sub.endpoint, code: S.auth.code };
   save();
   savePushAuth();
   return 'ok';
@@ -1118,9 +1118,10 @@ async function pushRefresh() {
     const reg = await navigator.serviceWorker.ready;
     const sub = await reg.pushManager.getSubscription();
     if (!sub) { await pushOn(); return; }
-    if (sub.endpoint !== S.push.endpoint) {
+    // Подписка обновилась или вошли под другим кодом — сообщаем серверу
+    if (sub.endpoint !== S.push.endpoint || S.push.code !== S.auth.code) {
       const r = await api('/push/subscribe', { code: S.auth.code, device: deviceId(), sub: sub.toJSON() });
-      if (r && r.ok) { S.push.endpoint = sub.endpoint; save(); }
+      if (r && r.ok) { S.push.endpoint = sub.endpoint; S.push.code = S.auth.code; save(); }
     }
   } catch (e) { /* без связи — в следующий раз */ }
 }
@@ -1174,7 +1175,9 @@ async function syncNow(force) {
       days[k] = d;
     } else if (z.deleted[k]) days[k] = { del: 1, u: z.deleted[k] };
   }
-  const sendMeta = all || z.metaDirty;
+  // После входа под другой код (metaFresh) свои настройки не шлём, пока не придут настройки этого кода с сервера —
+  // иначе твои ставки могли бы записаться коллеге, у которого их ещё нет на сервере
+  const sendMeta = (all && !z.metaFresh) || z.metaDirty;
   // Время каждого поля настроек; поле, которое ни разу не меняли здесь, — со старым общим временем
   const mu = {};
   for (const f of META_F) mu[f] = (z.metaFu && z.metaFu[f]) || z.metaU || 1;
@@ -1217,6 +1220,7 @@ async function syncNow(force) {
       delete z.deleted[k];
     }
     if (r.meta) {
+      z.metaFresh = false;
       // По полям: берём с сервера поле, если там оно изменено не раньше, чем здесь
       const m = r.meta, take = {};
       z.metaFu = z.metaFu || {};
@@ -1307,7 +1311,7 @@ async function switchData(code) {
   S.settings.zabka = false;
   S.settings.zlist = [];
   S.rateHist = []; // история ставок — у каждого своя, придёт с сервера
-  S.sync = { ...JSON.parse(JSON.stringify(DEFAULTS.sync)), dataCode: code };
+  S.sync = { ...JSON.parse(JSON.stringify(DEFAULTS.sync)), dataCode: code, metaFresh: true };
   syncedOnce = false;
   save();
 }
@@ -1319,7 +1323,8 @@ async function switchData(code) {
  */
 async function logout() {
   if (!(await syncNow())) return false;
-  if (S.push.on) await pushOff(); // уведомления этого кода на этом устройстве больше не нужны
+  // Уведомления остаются включёнными: сервер забывает это устройство у старого кода, при входе по новому — запомнит снова
+  if (S.push.on) { try { await api('/push/unsubscribe', { code: S.auth.code, device: deviceId() }); } catch (e) { /* без связи — не страшно */ } S.push.code = ''; }
   presence(false);
   try { await api('/logout', { code: S.auth.code, device: deviceId() }); } catch (e) { /* не страшно: устройство само отвалится при «Выйти на всех» */ }
   S.entries = {};
@@ -1328,7 +1333,7 @@ async function logout() {
   S.settings.zabka = false;
   S.settings.zlist = [];
   S.rateHist = []; // история ставок — у каждого своя, придёт с сервера
-  S.sync = JSON.parse(JSON.stringify(DEFAULTS.sync));
+  S.sync = { ...JSON.parse(JSON.stringify(DEFAULTS.sync)), metaFresh: true };
   S.auth = { ...S.auth, ok: false, code: '', name: '', owner: false, expires: null, reason: 'logged_out' };
   savePushAuth();
   syncedOnce = false;
@@ -2253,6 +2258,7 @@ const actions = {
         toast(`${t('Добро пожаловать', 'Witaj')}${r.name ? `, ${r.name}` : ''}!`);
         syncNow(); // владелец на новом устройстве сразу получит свои записи
         presence(true);
+        pushRefresh(); // уведомления были включены — теперь они для этого кода
         return;
       }
       // Сервер сломан — это не «неверный код»
