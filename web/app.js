@@ -3,7 +3,7 @@
 /* Учёт работы — PWA. Создатель: Artur Alimhulov.
    Данные хранятся на телефоне (localStorage) и копией на сервере под кодом доступа (см. «Записи на сервере»). */
 
-const VERSION = '4.7';
+const VERSION = '4.8';
 const STORE_KEY = 'uchet-raboty-v1';
 
 /* ==== calc:begin ====
@@ -2126,12 +2126,20 @@ setInterval(renderTop, 60000);
 // Обновление. iPhone часто не перезапускает ярлык, а просто «будит» его из фона,
 // поэтому при каждом возврате в приложение сами проверяем, нет ли новой версии,
 // и как только она скачалась — перезагружаемся (если человек ничего не печатает).
+// После перезагрузки на новую версию — короткое «Обновлено до X», чтобы было видно, что обновление пришло
+function markUpdate() { try { sessionStorage.setItem('ew-updated-from', VERSION); } catch (e) { /* без хранилища — без сообщения */ } }
+try {
+  const from = sessionStorage.getItem('ew-updated-from');
+  sessionStorage.removeItem('ew-updated-from');
+  if (from && from !== VERSION) setTimeout(() => toast(t(`Приложение обновлено до ${VERSION}`, `Aplikacja zaktualizowana do ${VERSION}`)), 600);
+} catch (e) { /* ignore */ }
 if ('serviceWorker' in navigator && location.protocol !== 'file:') {
   const hadController = !!navigator.serviceWorker.controller;
   let swReg = null, reloadPending = false;
   const reloadNow = () => {
     const a = document.activeElement;
     if (a && (a.tagName === 'INPUT' || a.tagName === 'TEXTAREA')) { reloadPending = true; return; }
+    markUpdate();
     location.reload();
   };
   navigator.serviceWorker.addEventListener('controllerchange', () => { if (hadController) reloadNow(); });
@@ -2140,7 +2148,7 @@ if ('serviceWorker' in navigator && location.protocol !== 'file:') {
   });
   document.addEventListener('visibilitychange', () => {
     if (document.visibilityState !== 'visible') return;
-    if (reloadPending) { location.reload(); return; }
+    if (reloadPending) { markUpdate(); location.reload(); return; }
     if (swReg) swReg.update().catch(() => {});
   });
 }
