@@ -82,6 +82,12 @@
     .rec-half .tot { font-weight: 700; font-size: 16px; border-top: 1px solid var(--outline-v); padding-top: 6px; margin-top: 2px; }
     .rec-half .tot span:last-child { color: var(--primary); }
     .rec-ok { color: var(--primary); font-weight: 650; }
+    /* Резервные копии и архив */
+    .bk-list { display: flex; flex-direction: column; }
+    .bk-row { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 8px 0; border-bottom: 1px solid var(--outline-v); }
+    .bk-row:last-child { border-bottom: 0; }
+    .bk-acts { display: flex; gap: 12px; flex: none; }
+    .danger-link { color: var(--error) !important; }
     .rec-bad { color: var(--error); font-weight: 650; }
     .rec-table { width: 100%; border-collapse: collapse; font-size: 14px; }
     .rec-table th { text-align: left; font-size: 12px; color: var(--text2); font-weight: 700; text-transform: uppercase; letter-spacing: .03em; padding: 6px 6px; border-bottom: 1px solid var(--outline-v); }
@@ -215,6 +221,8 @@
   let pass = sessionStorage.getItem('admin-pass') || '';
   let items = [];
   let cfg = null;
+  let archived = []; // удалённые коды — записи сохранены, можно вернуть
+  let backups = null; // список резервных копий на сервере
   let query = '';
   let filter = 'all';
   let tab = sessionStorage.getItem('admin-tab') || 'people';
@@ -368,9 +376,25 @@
     if (pass && document.visibilityState === 'visible' && tab === 'people' && items.length) { await loadOnline(); refreshPeople(); }
   });
 
+  async function loadBackups() {
+    try { backups = (await call('/admin/backups')).list || []; } catch (e) { backups = backups || []; }
+  }
+  /** Отдать файл на скачивание. */
+  function download(name, text) {
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(new Blob([text], { type: 'application/json' }));
+    a.download = name;
+    document.body.appendChild(a);
+    a.click();
+    setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 1000);
+  }
+  const kb = (n) => (n >= 1048576 ? `${(n / 1048576).toFixed(1)} МБ` : `${Math.max(1, Math.round(n / 1024))} КБ`);
+  const dayRu = (d) => d.split('-').reverse().join('.');
+
   async function load() {
-    const [r] = await Promise.all([call('/admin/list'), loadSite(), loadOnline()]);
+    const [r] = await Promise.all([call('/admin/list'), loadSite(), loadOnline(), loadBackups()]);
     items = r.items || [];
+    archived = r.archived || [];
     cfg = r.cfg || null;
     render();
     // Проверка файла на сайте — в фоне, потом перерисуем карточку
@@ -554,6 +578,28 @@
       </section>
 
       <section class="card">
+        <h3>Резервные копии записей</h3>
+        <p class="muted small">Каждую ночь сервер сам сохраняет копию всех записей всех людей (и тех, кто в архиве). Копии хранятся 35 дней. Скачанный файл можно положить в OneDrive — тогда записи сохранятся, даже если с сервером что-то случится.</p>
+        ${backups == null ? '<p class="muted small">Загружаю…</p>' : !backups.length ? '<p class="muted small">Копий пока нет — первая появится этой ночью или по кнопке ниже.</p>'
+          : `<div class="bk-list">${backups.slice(0, 7).map((b) => `<div class="bk-row">
+              <span><b>${dayRu(b.day)}</b> <span class="muted small">· ${b.codes ?? '?'} ${plural(b.codes || 0, 'человек', 'человека', 'человек')} · ${b.days ?? '?'} ${plural(b.days || 0, 'день', 'дня', 'дней')} · ${kb(b.size || 0)}</span></span>
+              <button class="link" data-s="bk-dl" data-day="${esc(b.day)}">Скачать</button></div>`).join('')}</div>`}
+        <div class="btn-row">
+          <button class="btn tonal" data-s="bk-now">Сделать копию сейчас</button>
+          <button class="btn primary" data-s="bk-all">Скачать все записи</button>
+        </div>
+      </section>
+
+      <section class="card">
+        <h3>Архив</h3>
+        <p class="muted small">Удалённые коды. Код не работает, но записи человека сохранены на сервере — его можно вернуть с теми же записями.</p>
+        ${!archived.length ? '<p class="muted small">Архив пуст.</p>' : `<div class="bk-list">${archived.map((a) => `<div class="bk-row">
+            <span><b>${esc(a.name)}</b> <span class="muted small">· ${esc(a.code)}${a.archivedAt ? ` · удалён ${dateOnly(a.archivedAt)}` : ''}</span></span>
+            <span class="bk-acts"><button class="link" data-s="ar-restore" data-c="${esc(a.code)}">Вернуть</button>
+            <button class="link danger-link" data-s="ar-purge" data-c="${esc(a.code)}">Стереть</button></span></div>`).join('')}</div>`}
+      </section>
+
+      <section class="card">
         <h3>Что делают кнопки</h3>
         <dl class="help" style="margin:0">
           <dt>Копировать приглашение</dt><dd>Готовый текст со ссылкой и кодом — отправь человеку в мессенджер.</dd>
@@ -563,7 +609,7 @@
           <dt>Список Жабок</dt><dd>Жабки человека на эту неделю — по одной в строке, как они уходят в WhatsApp. Человек может поправить список и сам в приложении. В «Записях» видно, по каким Жабкам отправлен отчёт.</dd>
           <dt>Выйти на всех устройствах</dt><dd>Если человек потерял телефон или код мог кто-то узнать: все устройства с этим кодом попросят ввести его заново. Код работает на любом устройстве — в приложении есть «Выйти», чтобы зайти под кодом коллеги.</dd>
           <dt>Записи</dt><dd>Записи человека: дни, итоги и выплата по половинам месяца, что пришло на счёт. Нажми на день, чтобы исправить — например, добавить Жабку, которую сделали вместо него. Правка придёт ему при следующей синхронизации.</dd>
-          <dt>Удалить</dt><dd>Код исчезает из списка навсегда вместе с записями на сервере.</dd>
+          <dt>Удалить</dt><dd>Код перестаёт работать и уходит в «Архив» (Настройки). Записи человека остаются на сервере — код можно вернуть.</dd>
           <dt>Сообщить всем об обновлении</dt><dd>Появляется, когда на сайт выложен новый APK. У людей с APK при запуске появится кнопка «Обновить».</dd>
         </dl>
       </section>`;
@@ -752,6 +798,7 @@
       ${rows.length ? `<table class="rec-table"><thead><tr><th>Дата</th><th style="text-align:right">Точки</th>${s.zabka ? '<th style="text-align:right">Жабка</th>' : ''}<th>Заметка</th></tr></thead>
         <tbody>${rows.join('')}</tbody></table>` : '<p class="muted">В этом месяце записей нет.</p>'}
       <button class="btn tonal" data-re="new">+ Добавить или исправить день</button>
+      <button class="link" data-re="restore" style="align-self:flex-start">Вернуть пропавшие дни из резервной копии</button>
       ${s.header ? `<div><label class="lbl">Шапка отчёта</label><div class="rec-meta">${esc(s.header)}</div></div>` : ''}
       <p class="muted small" style="margin:0">Ставки: ${rt(s.rates.point)} zł за точку${s.zabka ? `, ${rt(s.rates.machine)} zł за автомат Жабки` : ' · Жабка выключена'}${s.months.length ? ` · месяцев с записями: ${s.months.length}` : ''}</p>`;
   }
@@ -794,6 +841,28 @@
       return;
     }
     if (act === 'cancel') { s.edit = null; openSheet(s); return; }
+    if (act === 'restore') {
+      // Из резервной копии возвращаются только дни, которых сейчас нет (пропали или стёрты), — существующие не трогаются
+      if (backups == null) await loadBackups();
+      if (!backups.length) { toast('Резервных копий пока нет'); return; }
+      const day = await dialog({
+        title: 'Из какой копии?',
+        text: `Есть копии за: ${backups.slice(0, 7).map((b) => dayRu(b.day)).join(', ')}. Впиши дату в виде ГГГГ-ММ-ДД.`,
+        field: { kind: 'text', value: backups[0].day, max: 10, placeholder: 'ГГГГ-ММ-ДД', required: 'Впиши дату' },
+      });
+      if (!day) return;
+      try {
+        const dry = await call('/admin/restore', 'POST', { day: day.trim(), code: s.item.code, dry: true });
+        const n = dry.days.length + dry.paid.length + (dry.meta ? 1 : 0);
+        if (!n) { toast('В этой копии нет ничего, чего не хватает сейчас'); return; }
+        const list = dry.days.map(dayRu).join(', ');
+        if (!await dialog({ title: 'Вернуть из копии?', text: `${dry.days.length ? `Дни: ${list}.` : ''}${dry.paid.length ? ` Суммы «Пришло на счёт»: ${dry.paid.length}.` : ''}${dry.meta ? ' Настройки.' : ''} Дни, которые есть сейчас, не изменятся.`, ok: 'Вернуть' })) return;
+        await call('/admin/restore', 'POST', { day: day.trim(), code: s.item.code });
+        await openRecords(s.item, s.month);
+        toast('Возвращено — придёт человеку при следующей синхронизации');
+      } catch (e) { toast(e.message === 'not_found' ? 'Нет копии за эту дату' : e.message === 'not_in_backup' ? 'Этого кода нет в копии' : 'Ошибка'); }
+      return;
+    }
     if (act === 'm-' || act === 'm+') {
       const inp = document.getElementById('re-m');
       inp.value = String(Math.max(0, (parseInt(inp.value, 10) || 0) + (act === 'm+' ? 1 : -1)) || '');
@@ -1044,6 +1113,32 @@
             `Готово: всем предлагается ${a.name}`);
         }
         case 'offline-save': return saveCfg({ offlineDays: v('offline') });
+        case 'bk-now':
+          try { const r = await call('/admin/backup/now', 'POST', {}); await loadBackups(); render(); toast(`Копия сделана: ${r.codes} ${plural(r.codes, 'человек', 'человека', 'человек')}, ${r.days} ${plural(r.days, 'день', 'дня', 'дней')}`); }
+          catch (e) { toast('Не получилось сделать копию'); }
+          return;
+        case 'bk-all':
+          try { const r = await call('/admin/export'); download(`ewidencja-zapisi-${isoDate(Date.now())}.json`, JSON.stringify(r, null, 1)); }
+          catch (e) { toast('Не получилось скачать'); }
+          return;
+        case 'bk-dl':
+          try { const r = await call(`/admin/backup?day=${encodeURIComponent(s.dataset.day)}`); download(`ewidencja-kopia-${s.dataset.day}.json`, JSON.stringify(r, null, 1)); }
+          catch (e) { toast('Не получилось скачать'); }
+          return;
+        case 'ar-restore': {
+          const a = archived.find((x) => x.code === s.dataset.c);
+          if (!a || !await dialog({ title: 'Вернуть код?', text: `«${a.name}» снова сможет войти по коду ${a.code}. Все его записи на месте.`, ok: 'Вернуть' })) return;
+          try { await call('/admin/archive', 'POST', { code: a.code, action: 'restore' }); await load(); toast('Код возвращён'); }
+          catch (e) { toast(e.message === 'code_taken' ? 'Этот номер кода уже занят' : 'Ошибка'); }
+          return;
+        }
+        case 'ar-purge': {
+          const a = archived.find((x) => x.code === s.dataset.c);
+          if (!a || !await dialog({ title: 'Стереть записи навсегда?', text: `Записи «${a.name}» будут стёрты с сервера. Они останутся только в резервных копиях — ещё 35 дней. Отменить это нельзя.`, ok: 'Стереть', danger: true })) return;
+          try { await call('/admin/archive', 'POST', { code: a.code, action: 'purge' }); await load(); toast('Стёрто'); }
+          catch (e) { toast('Ошибка'); }
+          return;
+        }
         case 'mail-save': {
           const list = v('mail-to').split(/[\s,;]+/).filter(Boolean);
           const bad = list.filter((s) => !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(s));
@@ -1124,7 +1219,7 @@
     }
     const ask = {
       disable: { title: 'Отключить доступ?', text: `«${it.name}» не сможет пользоваться приложением. Сработает при следующем запуске с интернетом. Включить обратно можно в любой момент.`, ok: 'Отключить', danger: true },
-      delete: { title: 'Удалить код?', text: `Код «${it.name}» удалится навсегда вместе с его записями на сервере, человек потеряет доступ к приложению. Записи на его телефоне останутся. Отменить это нельзя.`, ok: 'Удалить', danger: true },
+      delete: { title: 'Удалить код?', text: `Код «${it.name}» перестанет работать и уйдёт в архив. Записи человека останутся на сервере — в Настройках → Архив код можно вернуть.`, ok: 'Удалить', danger: true },
       unbind: { title: 'Выйти на всех устройствах?', text: `Приложение на всех устройствах с кодом «${it.name}» попросит ввести код заново. Записи на сервере останутся.`, ok: 'Выйти везде' },
     }[action];
     if (ask && !await dialog(ask)) return;

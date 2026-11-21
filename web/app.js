@@ -2,7 +2,7 @@
 /* Учёт работы — PWA. Создатель: Artur Alimhulov.
    Данные хранятся на телефоне (localStorage) и копией на сервере под кодом доступа (см. «Записи на сервере»). */
 
-const VERSION = '4.5';
+const VERSION = '4.6';
 const STORE_KEY = 'uchet-raboty-v1';
 
 /* ==== calc:begin ====
@@ -98,7 +98,7 @@ const DEFAULTS = {
   // Синхронизация между устройствами (только у владельца). since — метка сервера с прошлого раза,
   // dirty — дни, изменённые здесь и ещё не отправленные, deleted — когда день был очищен.
   // dataCode — чьи записи сейчас на этом устройстве (код доступа); при вводе другого кода записи меняются.
-  sync: { since: 0, dirty: {}, deleted: {}, metaU: 0, metaDirty: false, at: 0, paidDirty: {}, dataCode: '' },
+  sync: { since: 0, dirty: {}, deleted: {}, metaU: 0, metaFu: {}, metaDirty: false, at: 0, paidDirty: {}, dataCode: '', skew: 0 },
   // Сверка выплаты: сколько реально пришло за период. Ключ — первый день периода, v: null — стёрто.
   paid: {},
 };
@@ -152,6 +152,8 @@ const sameEntry = (a, b) => a.points === b.points && a.machines === b.machines &
    n — заметка, z — план Жабок). Правки одного дня с двух устройств не перетирают друг друга. */
 const FMAP = [['points', 'p'], ['machines', 'm'], ['start', 's'], ['end', 'e'], ['note', 'n'], ['z', 'z']];
 const FEMPTY = { points: 0, machines: 0, start: null, end: null, note: '', z: [] };
+/** Поля настроек, которые синхронизируются по отдельности. */
+const META_F = ['rates', 'header', 'zabka', 'zlist'];
 const sameField = (k, a, b) => (k === 'z' ? sameZ(a, b) : k === 'note' ? (a || '') === (b || '') : (a ?? null) === (b ?? null));
 /** Время изменения каждого поля записи. Старые записи: у всего дня одно время u; плана Жабок нет — 0. */
 function fuOf(x) {
@@ -164,13 +166,22 @@ function fuOf(x) {
   return t;
 }
 
+/**
+ * Время правки. Если часы телефона сбиты больше чем на 2 минуты, поправляем их по часам сервера
+ * (разницу узнаём при каждой синхронизации) — иначе правка «из будущего» перебивала бы настоящие.
+ */
+function nowU() {
+  const s = (S.sync && S.sync.skew) || 0;
+  return Date.now() + (Math.abs(s) > 120000 ? s : 0);
+}
+
 function update(e, fn) {
   const k = iso(e);
   const before = entry(e);
   const x = { ...before };
   fn(x);
   if (sameEntry(x, before)) return;
-  const now = Date.now();
+  const now = nowU();
   // Время ставим только тем полям, которые поменялись. Пустой день не удаляем — так помнятся времена полей.
   const fu = fuOf(before);
   for (const [key, f] of FMAP) if (!sameField(key, x[key], before[key])) fu[f] = now;
@@ -183,9 +194,12 @@ function update(e, fn) {
   save();
 }
 
-/** Ставки, шапка или раздел Жабки изменились — отправим на сервер. */
-function metaChanged() {
-  S.sync.metaU = Date.now();
+/** Ставки (rates), шапка (header), раздел Жабки (zabka) или список Жабок (zlist) изменились — отправим на сервер.
+    У каждого поля своё время: правка одного поля здесь и другого в админке не перетирают друг друга. */
+function metaChanged(field) {
+  const now = nowU();
+  S.sync.metaU = now;
+  S.sync.metaFu = { ...(S.sync.metaFu || {}), [field]: now };
   S.sync.metaDirty = true;
   syncSoon();
 }
@@ -194,7 +208,7 @@ function metaChanged() {
 function setPaid(key, v) {
   const cur = S.paid[key];
   if ((cur ? cur.v : null) === v) return;
-  S.paid[key] = { v, u: Date.now() };
+  S.paid[key] = { v, u: nowU() };
   S.sync.paidDirty[key] = 1;
   syncSoon();
   save();
@@ -866,7 +880,11 @@ async function api(path, data) {
       signal: ctrl.signal,
       cache: 'no-store',
     });
-    return await res.json();
+    // Сервер ответил, но с ошибкой (сломан, перегружен) — это не «нет интернета»
+    let out = null;
+    try { out = await res.json(); } catch (e) { out = null; }
+    if (!out || res.status >= 500) return { ok: false, error: 'server_down', status: res.status };
+    return out;
   } finally {
     clearTimeout(timer);
   }
@@ -907,6 +925,11 @@ async function checkAccess(force) {
       if (wasOffline) $sheet.innerHTML = '';
       render();
       syncNow();
+    } else if (r && (r.error === 'server' || r.error === 'server_down')) {
+      // Интернет есть, но сломан сам сервер — не закрываем приложение «из-за долгого отсутствия связи»
+      S.auth.lastOk = Date.now();
+      save();
+      if (wasOffline) { $sheet.innerHTML = ''; render(); }
     }
   } catch (e) { /* нет интернета — работаем как обычно */ }
 }
@@ -975,7 +998,10 @@ async function syncNow(force) {
     } else if (z.deleted[k]) days[k] = { del: 1, u: z.deleted[k] };
   }
   const sendMeta = all || z.metaDirty;
-  const meta = sendMeta ? { rates: S.rates, header: S.settings.header || '', zabka: !!S.settings.zabka, zlist: S.settings.zlist || [], u: z.metaU || 1 } : null;
+  // Время каждого поля настроек; поле, которое ни разу не меняли здесь, — со старым общим временем
+  const mu = {};
+  for (const f of META_F) mu[f] = (z.metaFu && z.metaFu[f]) || z.metaU || 1;
+  const meta = sendMeta ? { rates: S.rates, header: S.settings.header || '', zabka: !!S.settings.zabka, zlist: S.settings.zlist || [], u: z.metaU || 1, mu } : null;
   const paid = {};
   for (const k of all ? Object.keys(S.paid) : Object.keys(z.paidDirty)) if (S.paid[k]) paid[k] = S.paid[k];
   // Снимаем отметку «не отправлено» заранее: если за время запроса день снова изменят, отметка встанет снова
@@ -1013,21 +1039,30 @@ async function syncNow(force) {
       S.entries[k] = nx;
       delete z.deleted[k];
     }
-    if (r.meta && r.meta.u >= (z.metaU || 0)) {
-      const rt = r.meta.rates || {};
-      if (rt.point > 0 && rt.machine > 0 && (rt.point !== S.rates.point || rt.machine !== S.rates.machine)) {
+    if (r.meta) {
+      // По полям: берём с сервера поле, если там оно изменено не раньше, чем здесь
+      const m = r.meta, take = {};
+      z.metaFu = z.metaFu || {};
+      for (const f of META_F) {
+        const rt = m.mu && m.mu[f] != null ? m.mu[f] : m.u || 0;
+        const lt = z.metaFu[f] || z.metaU || 0;
+        take[f] = m[f] !== undefined && rt >= lt;
+        if (take[f]) z.metaFu[f] = rt;
+      }
+      const rt = m.rates || {};
+      if (take.rates && rt.point > 0 && rt.machine > 0 && (rt.point !== S.rates.point || rt.machine !== S.rates.machine)) {
         S.rates = { point: rt.point, machine: rt.machine }; changedUi = true;
       }
-      if (typeof r.meta.header === 'string' && r.meta.header !== S.settings.header) {
-        S.settings.header = r.meta.header; changedUi = true;
+      if (take.header && typeof m.header === 'string' && m.header !== S.settings.header) {
+        S.settings.header = m.header; changedUi = true;
       }
-      if (typeof r.meta.zabka === 'boolean' && r.meta.zabka !== !!S.settings.zabka) {
-        S.settings.zabka = r.meta.zabka; changedUi = true;
+      if (take.zabka && typeof m.zabka === 'boolean' && m.zabka !== !!S.settings.zabka) {
+        S.settings.zabka = m.zabka; changedUi = true;
       }
-      if (Array.isArray(r.meta.zlist) && JSON.stringify(r.meta.zlist) !== JSON.stringify(S.settings.zlist || [])) {
-        S.settings.zlist = r.meta.zlist; changedUi = true;
+      if (take.zlist && Array.isArray(m.zlist) && JSON.stringify(m.zlist) !== JSON.stringify(S.settings.zlist || [])) {
+        S.settings.zlist = m.zlist; changedUi = true;
       }
-      z.metaU = r.meta.u;
+      z.metaU = Math.max(z.metaU || 0, m.u || 0);
     }
     for (const [k, d] of Object.entries(r.paid || {})) {
       const loc = S.paid[k];
@@ -1038,6 +1073,8 @@ async function syncNow(force) {
     }
     z.since = r.now;
     z.at = Date.now();
+    // Насколько часы телефона расходятся с часами сервера — для времени следующих правок (см. nowU)
+    if (r.now) z.skew = r.now - Date.now();
     z.dataCode = S.auth.code; // записи на этом устройстве — этого кода
     syncedOnce = true;
     save();
@@ -1942,7 +1979,8 @@ const actions = {
         presence(true);
         return;
       }
-      err.textContent = authMessage((r && r.reason) || 'invalid');
+      // Сервер сломан — это не «неверный код»
+      err.textContent = authMessage(r && r.error === 'server_down' ? 'network' : (r && r.reason) || 'invalid');
     } catch (e) {
       err.textContent = authMessage('network');
     }
@@ -1990,10 +2028,10 @@ function syncNum(field) {
 const fields = {
   points(el) { const v = el.value.replace(/\D/g, '').slice(0, 4); if (v !== el.value) el.value = v; const was = entry(ui.day).points || 0; update(ui.day, (x) => { x.points = Number(v) || 0; }); refreshDay(); pointsMoneyFx(was); },
   machines(el) { const v = el.value.replace(/\D/g, '').slice(0, 3); if (v !== el.value) el.value = v; update(ui.day, (x) => { x.machines = Number(v) || 0; }); refreshDay(); },
-  header(el) { S.settings.header = el.value; metaChanged(); save(); },
-  zlist(el) { S.settings.zlist = el.value.split('\n').map((s) => s.trim()).filter(Boolean).slice(0, 60); metaChanged(); save(); },
-  'rate-point'(el) { const v = parseFloat(el.value.replace(',', '.')); if (Number.isFinite(v) && v >= 0) { S.rates.point = v; metaChanged(); save(); } },
-  'rate-machine'(el) { const v = parseFloat(el.value.replace(',', '.')); if (Number.isFinite(v) && v >= 0) { S.rates.machine = v; metaChanged(); save(); } },
+  header(el) { S.settings.header = el.value; metaChanged('header'); save(); },
+  zlist(el) { S.settings.zlist = el.value.split('\n').map((s) => s.trim()).filter(Boolean).slice(0, 60); metaChanged('zlist'); save(); },
+  'rate-point'(el) { const v = parseFloat(el.value.replace(',', '.')); if (Number.isFinite(v) && v >= 0) { S.rates.point = v; metaChanged('rates'); save(); } },
+  'rate-machine'(el) { const v = parseFloat(el.value.replace(',', '.')); if (Number.isFinite(v) && v >= 0) { S.rates.machine = v; metaChanged('rates'); save(); } },
   paid(el) {
     const raw = el.value.replace(/[\s  ]/g, '').replace(',', '.');
     const v = raw === '' ? null : Number(raw);
@@ -2046,7 +2084,7 @@ document.addEventListener('input', (ev) => {
 document.addEventListener('change', (ev) => {
   const el = ev.target;
   if (el.dataset.date !== undefined && el.value) { ui.day = fromIso(el.value); render(true); }
-  if (el.dataset.check === 'zabka') { S.settings.zabka = el.checked; metaChanged(); save(); render(); }
+  if (el.dataset.check === 'zabka') { S.settings.zabka = el.checked; metaChanged('zabka'); save(); render(); }
   if (el.dataset.field === 'rate-point' || el.dataset.field === 'rate-machine') render();
 });
 
