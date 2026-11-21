@@ -510,20 +510,8 @@ span.shake { display: inline-block; }
 }
 
 /* ---------- Жабки: свой оттенок (значки, кнопки −/+, чипы внутри блока) ---------- */
-.zone-z {
-  display: flex; flex-direction: column; gap: 12px;
-  --pc: hsl(calc(var(--h) + 45) calc(55% * var(--k)) 88%);
-  --on-pc: hsl(calc(var(--h) + 45) calc(70% * var(--k)) 16%);
-  --sc: hsl(calc(var(--h) + 45) calc(30% * var(--k)) 90%);
-  --on-sc: hsl(calc(var(--h) + 45) calc(45% * var(--k)) 16%);
-}
-:root[data-dark="1"] .zone-z {
-  --pc: hsl(calc(var(--h) + 45) calc(40% * var(--k)) 26%);
-  --on-pc: hsl(calc(var(--h) + 45) calc(55% * var(--k)) 88%);
-  --sc: hsl(calc(var(--h) + 45) calc(18% * var(--k)) 24%);
-  --on-sc: hsl(calc(var(--h) + 45) calc(30% * var(--k)) 90%);
-}
-.zone-z { --primary: var(--tertiary); }
+/* Блок Жабок — в цветах темы, как остальные карточки (без своих подложек) */
+.zone-z { display: flex; flex-direction: column; gap: 12px; }
 .link .ic { display: inline-block; }
 .tiles .zone-z > .tile { height: 100%; }
 .tiles .zone-z .tile .v { color: var(--z); }

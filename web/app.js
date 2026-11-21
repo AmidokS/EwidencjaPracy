@@ -2,7 +2,7 @@
 /* Учёт работы — PWA. Создатель: Artur Alimhulov.
    Данные хранятся на телефоне (localStorage) и копией на сервере под кодом доступа (см. «Записи на сервере»). */
 
-const VERSION = '4.4';
+const VERSION = '4.5';
 const STORE_KEY = 'uchet-raboty-v1';
 
 /* ==== calc:begin ====
