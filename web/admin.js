@@ -1,0 +1,1043 @@
+/* Страница управления (admin.html): коды доступа, люди, записи, настройки, резервные копии. */
+  'use strict';
+  const API = (window.AUTH_API || '').replace(/\/+$/, '');
+  const APP_LINK = new URL('./', location.href).href;
+  const APK_LINK = APP_LINK + 'EwidencjaPracy.apk';
+  const root = document.getElementById('root');
+  let pass = sessionStorage.getItem('admin-pass') || '';
+  let items = [];
+  let cfg = null;
+  let archived = []; // удалённые коды — записи сохранены, можно вернуть
+  let backups = null; // список резервных копий на сервере
+  let errors = []; // журнал ошибок: сервер, ночная копия, приложения на телефонах
+  let query = '';
+  let filter = 'all';
+  let tab = sessionStorage.getItem('admin-tab') || 'people';
+  let openCode = null;   // чья карточка раскрыта
+  let sheet = null;      // открытое окно: { kind: 'new' } или { kind: 'code', item, title }
+
+  // Тема как в приложении
+  const dark = matchMedia('(prefers-color-scheme: dark)').matches;
+  document.documentElement.dataset.dark = dark ? '1' : '0';
+
+  const DAY = 86400000;
+  const p2 = (n) => String(n).padStart(2, '0');
+  const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+  const when = (ms) => {
+    if (!ms) return '—';
+    const d = new Date(ms);
+    return `${p2(d.getDate())}.${p2(d.getMonth() + 1)}.${d.getFullYear()} ${p2(d.getHours())}:${p2(d.getMinutes())}`;
+  };
+  const dateOnly = (ms) => { const d = new Date(ms); return `${p2(d.getDate())}.${p2(d.getMonth() + 1)}.${d.getFullYear()}`; };
+  const isoDate = (ms) => { const d = new Date(ms); return `${d.getFullYear()}-${p2(d.getMonth() + 1)}-${p2(d.getDate())}`; };
+  /** Конец выбранного дня (код действует весь этот день). */
+  const endOfDay = (y, m, d) => new Date(y, m - 1, d, 23, 59, 59).getTime();
+  function parseDate(s) {
+    s = String(s || '').trim();
+    let m = /^(\d{1,2})[.\-/](\d{1,2})[.\-/](\d{4})$/.exec(s);
+    if (m) return endOfDay(+m[3], +m[2], +m[1]);
+    m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(s);
+    if (m) return endOfDay(+m[1], +m[2], +m[3]);
+    return null;
+  }
+  const ago = (ms) => {
+    if (!ms) return '';
+    const d = Math.floor((Date.now() - ms) / DAY);
+    return d <= 0 ? ' (сегодня)' : d === 1 ? ' (вчера)' : ` (${d} дн. назад)`;
+  };
+  /** Коротко для строки в списке: «сегодня», «вчера», «5 дн. назад». */
+  /** Последняя активность: «только что», «сегодня 14:32», «вчера 21:10», «5 дн. назад». */
+  const seen = (ms) => {
+    if (!ms) return 'не заходил';
+    if (Date.now() - ms < 15 * 60 * 1000) return 'только что';
+    const a = new Date(ms), b = new Date();
+    const days = Math.round((new Date(b.getFullYear(), b.getMonth(), b.getDate()) - new Date(a.getFullYear(), a.getMonth(), a.getDate())) / DAY);
+    const hm = `${p2(a.getHours())}:${p2(a.getMinutes())}`;
+    return days <= 0 ? `сегодня ${hm}` : days === 1 ? `вчера ${hm}` : `${days} дн. назад`;
+  };
+  const plural = (n, one, few, many) => {
+    const a = n % 10, b = n % 100;
+    return a === 1 && b !== 11 ? one : a >= 2 && a <= 4 && (b < 12 || b > 14) ? few : many;
+  };
+  const hue = (s) => { let h = 0; for (const c of String(s)) h = (h * 31 + c.charCodeAt(0)) % 360; return h; };
+  const initials = (s) => String(s || '?').trim().split(/\s+/).slice(0, 2).map((w) => w[0]).join('').toUpperCase() || '?';
+  const PLATFORM = { android: 'Android (APK)', ios: 'iPhone', 'web-android': 'Android (браузер)', web: 'Браузер' };
+
+  function toast(text) {
+    const el = document.getElementById('toast');
+    el.textContent = text; el.classList.add('show');
+    clearTimeout(toast.t); toast.t = setTimeout(() => el.classList.remove('show'), 1800);
+  }
+  async function copy(text) {
+    try { await navigator.clipboard.writeText(text); } catch (e) {
+      const ta = document.createElement('textarea'); ta.value = text; document.body.appendChild(ta); ta.select();
+      try { document.execCommand('copy'); } catch (e2) { /* ignore */ } ta.remove();
+    }
+    toast('Скопировано');
+  }
+  const invite = (it) =>
+    `Привет! Вот приложение для учёта работы (точки, Жабка, отчёты):\n${APP_LINK}\n\n` +
+    `Твой личный код доступа: ${it.code}\n\n` +
+    `На iPhone: открой ссылку в Safari → ••• → «Поделиться» → «На экран „Домой“».\n` +
+    `На Android: установи файл EwidencjaPracy.apk, который я пришлю отдельно (или открой ссылку в Chrome → ⋮ → «Установить приложение»).\n` +
+    `Не передавай код посторонним: по нему видны и меняются твои записи.`;
+
+  async function call(path, method = 'GET', data) {
+    const res = await fetch(API + path, {
+      method,
+      headers: { 'Authorization': `Bearer ${pass}`, 'Content-Type': 'application/json' },
+      body: data ? JSON.stringify(data) : undefined,
+      cache: 'no-store',
+    });
+    const j = await res.json().catch(() => ({}));
+    if (res.status === 401 || res.status === 429) {
+      const e = new Error(j.error || 'unauthorized');
+      e.code = res.status; e.left = j.left; e.minutes = j.minutes || 15;
+      throw e;
+    }
+    if (!res.ok || j.ok === false) throw new Error(j.error || 'error');
+    return j;
+  }
+
+  function renderLogin(msg) {
+    root.innerHTML = `
+      <h1 class="page-title">Коды доступа</h1>
+      ${!API ? `<p class="err">В файле config.js не указан адрес сервера.</p>` : ''}
+      <section class="card">
+        <p class="muted">Страница управления доступом к приложению. Введи пароль администратора.</p>
+        <input class="field" id="pw" type="password" placeholder="Пароль" autocomplete="current-password">
+        <p class="err" id="err">${esc(msg || '')}</p>
+        <button class="btn primary" id="login">Войти</button>
+      </section>`;
+    const go = async () => {
+      pass = document.getElementById('pw').value;
+      try { await load(); sessionStorage.setItem('admin-pass', pass); }
+      catch (e) {
+        renderLogin(
+          e.code === 429 ? `Слишком много неверных попыток. Вход закрыт на ${e.minutes} минут.`
+            : e.code === 401 ? `Неверный пароль.${e.left != null ? ` Осталось попыток: ${e.left}.` : ''}`
+            : 'Нет связи с сервером');
+      }
+    };
+    document.getElementById('login').onclick = go;
+    document.getElementById('pw').onkeydown = (e) => { if (e.key === 'Enter') go(); };
+  }
+
+  /* ---------- Кто сейчас в приложении (обновляется каждые 20 секунд) ---------- */
+  let online = new Map(); // код → { online, at, since, platform, version }
+  async function loadOnline() {
+    try {
+      const r = await call('/admin/online');
+      const m = new Map();
+      for (const x of r.list || []) {
+        const cur = m.get(x.code);
+        if (!cur) { m.set(x.code, { ...x }); continue; }
+        // У владельца несколько устройств: в сети, если хоть одно в сети
+        if (x.online && (!cur.online || x.since < cur.since)) Object.assign(cur, { online: true, since: x.since, platform: x.platform, version: x.version });
+        cur.at = Math.max(cur.at, x.at);
+      }
+      online = m;
+    } catch (e) { /* нет связи — оставляем прежнее */ }
+  }
+  const pres = (it) => online.get(it.code);
+  const isOnline = (it) => !!(pres(it) && pres(it).online);
+  /** Последняя активность: что свежее — вход с интернетом или последняя отметка «в приложении». */
+  const lastAct = (it) => Math.max(it.lastSeen || 0, (pres(it) && pres(it).at) || 0) || null;
+  const dur = (ms) => {
+    const m = Math.floor(Math.max(0, Date.now() - ms) / 60000);
+    return m < 1 ? '&lt;1 мин' : m < 60 ? `${m} мин` : `${Math.floor(m / 60)} ч ${m % 60} мин`;
+  };
+  function onlineBarHtml() {
+    const on = items.filter(isOnline);
+    if (!on.length) return '<div class="onl none"><span class="onl-dot"></span>Сейчас в приложении никого</div>';
+    return `<button class="onl${filter === 'online' ? ' on' : ''}" data-f="online">
+      <span class="onl-dot"></span><span>Сейчас в приложении: <b>${on.length}</b></span>
+      <span class="onl-names">${on.map((it) => esc(it.name)).join(', ')}</span></button>`;
+  }
+  setInterval(async () => {
+    if (!pass || document.visibilityState !== 'visible' || tab !== 'people') return;
+    await loadOnline();
+    refreshPeople();
+  }, 20000);
+  document.addEventListener('visibilitychange', async () => {
+    if (pass && document.visibilityState === 'visible' && tab === 'people' && items.length) { await loadOnline(); refreshPeople(); }
+  });
+
+  async function loadErrors() {
+    try { errors = (await call('/admin/errors')).list || []; } catch (e) { /* нет связи — оставляем прежнее */ }
+  }
+  async function loadBackups() {
+    try { backups = (await call('/admin/backups')).list || []; } catch (e) { backups = backups || []; }
+  }
+  /** Отдать файл на скачивание. */
+  function download(name, text) {
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(new Blob([text], { type: 'application/json' }));
+    a.download = name;
+    document.body.appendChild(a);
+    a.click();
+    setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 1000);
+  }
+  const SRC = { server: 'Сервер', android: 'Android', web: 'Браузер', 'web-android': 'Android (браузер)', ios: 'iPhone' };
+  /** Последней копии больше 36 часов — значит, ночная копия не сработала. */
+  const backupLate = () => !!backups && (!backups.length ? false : Date.now() - (backups[0].at || Date.parse(backups[0].day)) > 36 * 3600e3);
+  const kb = (n) => (n >= 1048576 ? `${(n / 1048576).toFixed(1)} МБ` : `${Math.max(1, Math.round(n / 1024))} КБ`);
+  const dayRu = (d) => d.split('-').reverse().join('.');
+
+  async function load() {
+    const [r] = await Promise.all([call('/admin/list'), loadSite(), loadOnline(), loadBackups(), loadErrors()]);
+    items = r.items || [];
+    archived = r.archived || [];
+    cfg = r.cfg || null;
+    render();
+    // Проверка файла на сайте — в фоне, потом перерисуем карточку
+    if (site && site.apkLive === null && site.apk && site.apk.code > ((cfg && cfg.apk && cfg.apk.code) || 0)) {
+      site.apkLive = 'checking';
+      verifyApk().then(() => { if (tab === 'settings') render(); });
+    }
+  }
+
+  const isExpired = (it) => !!it.expires && Date.now() > it.expires;
+  function status(it) {
+    if (it.owner) return '<span class="tag own">Владелец</span>';
+    if (!it.active) return '<span class="tag off">Отключён</span>';
+    if (isExpired(it)) return '<span class="tag off">Срок истёк</span>';
+    if (!it.device) return '<span class="tag wait">Ждёт входа</span>';
+    return '<span class="tag ok">Активен</span>';
+  }
+  const where = (it) => it.platform ? `${PLATFORM[it.platform] || esc(it.platform)}${it.version ? ` ${esc(it.version)}` : ''}` : '';
+  const SHORT = { android: 'APK', ios: 'iPhone', 'web-android': 'Android', web: 'Браузер' };
+  const whereShort = (it) => it.platform ? `${SHORT[it.platform] || esc(it.platform)}${it.version ? ` ${esc(it.version)}` : ''}` : '';
+  const CHEV = '<svg class="chev" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="m6 9 6 6 6-6"/></svg>';
+
+  function personHtml(it) {
+    const c = esc(it.code);
+    const open = openCode === it.code;
+    // Устройства, где сейчас введён код (у старых записей — один телефон без списка)
+    const devs = (it.devices || []).length ? it.devices : it.device && it.platform ? [{ platform: it.platform, version: it.version, last: it.lastSeen }] : [];
+    const p = pres(it), on = isOnline(it);
+    const act = on ? `<span class="on-txt">в сети · ${dur(p.since)}</span>` : seen(lastAct(it));
+    // «в сети» — сразу после кода, чтобы на узком экране не обрезалось
+    const middle = devs.length > 1 ? `${devs.length} ${plural(devs.length, 'устройство', 'устройства', 'устройств')}` : whereShort(it);
+    const line = (on ? [`<b>${c}</b>`, act, middle] : [`<b>${c}</b>`, middle, it.device || devs.length ? act : ''])
+      .filter(Boolean).join(' · ');
+    const flags = [
+      isOld(it) ? '<span class="tag bad">Старая версия</span>' : '',
+      it.expires && !isExpired(it) && it.expires - Date.now() < 7 * DAY ? `<span class="tag wait">Срок до ${dateOnly(it.expires)}</span>` : '',
+    ].filter(Boolean).join('');
+    return `<div class="person${open ? ' open' : ''}" data-p="${c}">
+      <button class="row" data-toggle="${c}" aria-expanded="${open}">
+        <span class="ava" style="--ah:${hue(it.name)}">${esc(initials(it.name))}${on ? '<i class="ava-dot" title="в сети"></i>' : ''}</span>
+        <span class="who"><span class="name">${esc(it.name)}</span><span class="line">${line}</span></span>
+        <span class="c c-code">${c}</span>
+        <span class="c c-dev">${devs.length > 1 ? `${devs.length} ${plural(devs.length, 'устройство', 'устройства', 'устройств')}` : (whereShort(it) || '—')}${isOld(it) ? ' <span class="warn">⚠</span>' : ''}</span>
+        <span class="c c-seen">${it.device || devs.length || on ? act : '—'}</span>
+        ${status(it)}${CHEV}
+      </button>
+      ${flags ? `<div class="flags">${flags}</div>` : ''}
+      <div class="more">
+        <div class="info">
+        ${it.note ? `<div class="note">${esc(it.note)}</div>` : ''}
+        <dl class="facts">
+          <dt>Устройства</dt><dd>${devs.length
+            ? devs.map((d) => `${PLATFORM[d.platform] || esc(d.platform || '?')}${d.version ? ` ${esc(d.version)}` : ''} — ${seen(d.last)}`).join('<br>')
+            : it.activated ? 'ни на одном — вышел или все устройства отключены' : 'ещё не вводил код'}${isOld(it) ? ' <span class="warn">— старая версия</span>' : ''}<br><span class="muted small">Код работает на любом устройстве: можно зайти под кодом коллеги, поправить его записи и выйти. «Выйти на всех устройствах» — если потерял телефон или код мог кто-то узнать.</span></dd>
+          <dt>Сейчас</dt><dd>${on
+            ? `<span class="on-txt">в приложении с ${when(p.since).slice(11)}</span> (${dur(p.since)}${p.platform ? `, ${PLATFORM[p.platform] || esc(p.platform)} ${esc(p.version || '')}` : ''})`
+            : p ? `не в приложении · последний раз ${when(p.at)}${ago(p.at)}` : 'не в приложении'}</dd>
+          <dt>Активность</dt><dd>${when(lastAct(it))}${ago(lastAct(it))}<br><span class="muted small">«В сети» — приложение открыто на экране и есть интернет. Список обновляется сам каждые 20 секунд.</span></dd>
+          <dt>Срок</dt><dd>${it.expires ? `до ${dateOnly(it.expires)}` : 'без срока'}</dd>
+          <dt>Создан</dt><dd>${when(it.created)}</dd>
+          ${it.activated ? `<dt>Активирован</dt><dd>${when(it.activated)}</dd>` : ''}
+        </dl>
+        </div>
+        <div class="acts">
+          <button class="main" data-a="invite" data-c="${c}">Копировать приглашение</button>
+          <button class="main alt" data-a="records" data-c="${c}">Записи</button>
+          <button data-a="zlist" data-c="${c}">Список Жабок</button>
+          <button data-a="rename" data-c="${c}">Переименовать</button>
+          <button data-a="note" data-c="${c}">${it.note ? 'Изменить заметку' : 'Добавить заметку'}</button>
+          ${it.owner ? '' : `<button data-a="expires" data-c="${c}">Срок действия</button>`}
+          <button data-a="regen" data-c="${c}">Сменить код</button>
+          ${it.device || devs.length ? `<button data-a="unbind" data-c="${c}">Выйти на всех устройствах</button>` : ''}
+          ${it.owner ? '' : (it.active
+            ? `<button class="danger" data-a="disable" data-c="${c}">Отключить</button>`
+            : `<button data-a="enable" data-c="${c}">Включить</button>`)}
+          ${it.owner ? '' : `<button class="danger" data-a="delete" data-c="${c}">Удалить</button>`}
+        </div>
+      </div>
+    </div>`;
+  }
+
+  // Старая версия APK: номер версии меньше, чем указан в «Обновлении Android»
+  // «1.6» → 1006000, «1.7.2» → 1007002 — чтобы сравнивать версии числами
+  const verNum = (v) => { const p = String(v || '').split('.').map((x) => parseInt(x, 10) || 0); return (p[0] || 0) * 1e6 + (p[1] || 0) * 1e3 + (p[2] || 0); };
+  const isOld = (it) => !!(cfg && cfg.apk && cfg.apk.name && it.platform === 'android' && it.version && verNum(it.version) < verNum(cfg.apk.name));
+  const WEEK = 7 * DAY;
+  const isClosed = (it) => !it.owner && (!it.active || isExpired(it));
+  // Плитки сверху (основные группы) и «проблемные» фильтры под поиском
+  const TILES = [
+    ['all', 'всего', () => true],
+    ['active', 'активны', (it) => !isClosed(it) && !!it.device],
+    ['wait', 'ждут входа', (it) => !isClosed(it) && !it.device],
+    ['off', 'закрыты', isClosed],
+  ];
+  const PROBLEMS = [
+    ['old', 'Старая версия', isOld],
+    ['idle', 'Не заходили 7+ дней', (it) => !isClosed(it) && !!it.device && (!it.lastSeen || Date.now() - it.lastSeen > WEEK)],
+  ];
+  const ONLINE_F = [['online', 'в сети', (it) => isOnline(it)]];
+  const filterFn = () => ([...TILES, ...PROBLEMS, ...ONLINE_F].find((f) => f[0] === filter) || TILES[0])[2];
+
+  function tilesHtml() {
+    return `<div class="stats">${TILES.map(([k, label, fn]) =>
+      `<button class="stat${filter === k ? ' on' : ''}" data-f="${k}"><b>${items.filter(fn).length}</b><span>${label}</span></button>`).join('')}</div>`;
+  }
+  function chipsHtml() {
+    const shown = PROBLEMS.map(([k, label, fn]) => [k, label, items.filter(fn).length]).filter(([k, , n]) => n > 0 || filter === k);
+    if (!shown.length) return '';
+    return `<div class="chips">${shown.map(([k, label, n]) =>
+      `<button class="chip${filter === k ? ' on' : ''}" data-f="${k}">⚠ ${label} <i>${n}</i></button>`).join('')}</div>`;
+  }
+  function listHtml() {
+    if (!items.length) return '<div class="empty">Пока нет ни одного кода.<br>Нажми «+ Новый код» и создай сначала код для себя.</div>';
+    const q = query.trim().toLowerCase();
+    const shown = items.filter(filterFn()).filter((it) => !q || [it.name, it.note, it.code].some((v) => String(v || '').toLowerCase().includes(q)));
+    if (!shown.length) return '<div class="empty">Никого не найдено.</div>';
+    // Шапка таблицы — видна только на компьютере
+    const head = '<div class="thead"><span></span><span>Имя</span><span>Код</span><span>Устройство</span><span>Активность</span><span>Статус</span><span></span></div>';
+    return head + shown.map(personHtml).join('');
+  }
+  function refreshPeople() {
+    const o = document.getElementById('onl'); if (o) o.innerHTML = onlineBarHtml();
+    const t = document.getElementById('tiles'); if (t) t.innerHTML = tilesHtml();
+    const c = document.getElementById('chips'); if (c) c.innerHTML = chipsHtml();
+    const l = document.getElementById('list'); if (l) l.innerHTML = listHtml();
+  }
+
+  function settingsHtml() {
+    const c = cfg || { msg: null, apk: { code: 0, name: '', url: '' }, minApk: 0, offlineDays: 7 };
+    const forced = c.minApk && c.apk.code && c.minApk >= c.apk.code;
+    return `
+      <section class="card">
+        <h3>Объявление для всех</h3>
+        <p class="muted small">Текст появится сверху в приложении у каждого. Человек может закрыть его крестиком.</p>
+        ${c.msg ? `<span class="now">Сейчас показывается</span>` : ''}
+        <textarea class="field" id="msg" rows="3" maxlength="500" placeholder="Например: в пятницу работаем до 14:00">${esc(c.msg ? c.msg.text : '')}</textarea>
+        <div class="btn-row">
+          <button class="btn primary" data-s="msg-save">${c.msg ? 'Обновить' : 'Показать всем'}</button>
+          ${c.msg ? '<button class="btn tonal" data-s="msg-clear">Убрать</button>' : ''}
+        </div>
+      </section>
+
+      <section class="card">
+        <h3>Обновление Android (APK)</h3>
+        ${c.apk && c.apk.name ? `<span class="now">У людей предлагается: версия ${esc(c.apk.name)} (номер ${c.apk.code})${forced ? ' · обязательное' : ''}</span>` : ''}
+        ${apkSiteHtml(c)}
+        <details class="manual">
+          <summary>Вписать вручную</summary>
+          <p class="muted small">Нужно, только если кнопка выше не подходит.</p>
+          <div class="two">
+            <div><label class="lbl">Версия</label><input class="field" id="apk-name" placeholder="1.8" value="${esc(c.apk.name || '')}"></div>
+            <div><label class="lbl">Номер версии</label><input class="field" id="apk-code" inputmode="numeric" placeholder="9" value="${c.apk.code || ''}"></div>
+          </div>
+          <label class="lbl">Ссылка на файл</label>
+          <input class="field" id="apk-url" value="${esc(c.apk.url || APK_LINK)}">
+          <label class="check"><input type="checkbox" id="apk-force" ${forced ? 'checked' : ''}> Обязательное обновление — старая версия не откроется, пока не обновят</label>
+          <button class="btn primary" data-s="apk-save">Сохранить</button>
+        </details>
+      </section>
+
+      <section class="card">
+        <h3>Кто на какой версии</h3>
+        <p class="muted small">По последнему входу с интернетом. Отключённые и с истёкшим сроком не считаются.</p>
+        ${versionsHtml()}
+      </section>
+
+      <section class="card">
+        <h3>Письма о проблемах</h3>
+        <p class="muted small">Кому уходят письма из приложения (нет пачки, повреждение и т.п.). Приложение откроет почту человека, где эти адреса уже вписаны в «Кому». Каждый адрес с новой строки, до 5.</p>
+        <textarea class="field" id="mail-to" rows="3" placeholder="adres@firma.pl">${esc((c.mailTo || []).join('\n'))}</textarea>
+        <button class="btn primary" data-s="mail-save">Сохранить</button>
+      </section>
+
+      <section class="card">
+        <h3>Работа без интернета</h3>
+        <p class="muted small">Сколько дней приложение работает без связи с сервером. Потом попросит включить интернет — так отключённый человек не сможет просто держать интернет выключенным. 0 — без ограничения.</p>
+        <div class="two">
+          <input class="field" id="offline" inputmode="numeric" value="${c.offlineDays ?? 7}" aria-label="Дней без интернета">
+          <button class="btn primary" data-s="offline-save">Сохранить</button>
+        </div>
+      </section>
+
+      <section class="card">
+        <h3>Резервные копии записей</h3>
+        <p class="muted small">Каждую ночь сервер сам сохраняет копию всех записей всех людей (и тех, кто в архиве). Копии хранятся 35 дней. Скачанный файл можно положить в OneDrive — тогда записи сохранятся, даже если с сервером что-то случится.</p>
+        ${backupLate() ? `<p class="err-box">⚠ Ночная копия не делалась ${backups.length ? `с ${dayRu(backups[0].day)}` : 'ни разу'}. Нажми «Сделать копию сейчас» и загляни в «Ошибки» ниже.</p>` : ''}
+        ${backups == null ? '<p class="muted small">Загружаю…</p>' : !backups.length ? '<p class="muted small">Копий пока нет — первая появится этой ночью или по кнопке ниже.</p>'
+          : `<div class="bk-list">${backups.slice(0, 7).map((b) => `<div class="bk-row">
+              <span><b>${dayRu(b.day)}</b> <span class="muted small">· ${b.codes ?? '?'} ${plural(b.codes || 0, 'человек', 'человека', 'человек')} · ${b.days ?? '?'} ${plural(b.days || 0, 'день', 'дня', 'дней')} · ${kb(b.size || 0)}</span></span>
+              <button class="link" data-s="bk-dl" data-day="${esc(b.day)}">Скачать</button></div>`).join('')}</div>`}
+        <div class="btn-row">
+          <button class="btn tonal" data-s="bk-now">Сделать копию сейчас</button>
+          <button class="btn primary" data-s="bk-all">Скачать все записи</button>
+        </div>
+      </section>
+
+      <section class="card">
+        <h3>Ошибки${errors.length ? ` · ${errors.length}` : ''}</h3>
+        <p class="muted small">Что ломалось за последние 14 дней: сервер, ночная копия, приложение у людей (падения Android и ошибки веб-версии). Пусто — всё работает.</p>
+        ${!errors.length ? '<p class="muted small">Ошибок нет ✓</p>' : `<div class="bk-list">${errors.slice(0, 20).map((x) => `<details class="err-row">
+            <summary><b>${esc(SRC[x.src] || x.src || '?')}</b>${x.name ? ` · ${esc(x.name)}` : ''}${x.version ? ` · ${esc(x.version)}` : ''}
+              <span class="muted small">· ${when(x.at)}${x.n > 1 ? ` · ×${x.n}` : ''}</span><br><span class="small">${esc(x.where || '')}</span></summary>
+            <pre class="err-text">${esc(x.msg || '')}</pre></details>`).join('')}</div>
+          <button class="btn tonal" data-s="err-clear">Очистить журнал</button>`}
+      </section>
+
+      <section class="card">
+        <h3>Архив</h3>
+        <p class="muted small">Удалённые коды. Код не работает, но записи человека сохранены на сервере — его можно вернуть с теми же записями.</p>
+        ${!archived.length ? '<p class="muted small">Архив пуст.</p>' : `<div class="bk-list">${archived.map((a) => `<div class="bk-row">
+            <span><b>${esc(a.name)}</b> <span class="muted small">· ${esc(a.code)}${a.archivedAt ? ` · удалён ${dateOnly(a.archivedAt)}` : ''}</span></span>
+            <span class="bk-acts"><button class="link" data-s="ar-restore" data-c="${esc(a.code)}">Вернуть</button>
+            <button class="link danger-link" data-s="ar-purge" data-c="${esc(a.code)}">Стереть</button></span></div>`).join('')}</div>`}
+      </section>
+
+      <section class="card">
+        <h3>Что делают кнопки</h3>
+        <dl class="help" style="margin:0">
+          <dt>Копировать приглашение</dt><dd>Готовый текст со ссылкой и кодом — отправь человеку в мессенджер.</dd>
+          <dt>Отключить</dt><dd>Закрыть доступ. Сработает при следующем запуске приложения с интернетом.</dd>
+          <dt>Срок действия</dt><dd>Код сам перестанет работать после выбранной даты.</dd>
+          <dt>Сменить код</dt><dd>Старый код сразу перестаёт работать, человек получает новый. Записи на сервере переезжают на новый код.</dd>
+          <dt>Список Жабок</dt><dd>Жабки человека на эту неделю — по одной в строке, как они уходят в WhatsApp. Человек может поправить список и сам в приложении. В «Записях» видно, по каким Жабкам отправлен отчёт.</dd>
+          <dt>Выйти на всех устройствах</dt><dd>Если человек потерял телефон или код мог кто-то узнать: все устройства с этим кодом попросят ввести его заново. Код работает на любом устройстве — в приложении есть «Выйти», чтобы зайти под кодом коллеги.</dd>
+          <dt>Записи</dt><dd>Записи человека: дни, итоги и выплата по половинам месяца, что пришло на счёт. Нажми на день, чтобы исправить — например, добавить Жабку, которую сделали вместо него. Правка придёт ему при следующей синхронизации.</dd>
+          <dt>Удалить</dt><dd>Код перестаёт работать и уходит в «Архив» (Настройки). Записи человека остаются на сервере — код можно вернуть.</dd>
+          <dt>Сообщить всем об обновлении</dt><dd>Появляется, когда на сайт выложен новый APK. У людей с APK при запуске появится кнопка «Обновить».</dd>
+        </dl>
+      </section>`;
+  }
+
+  /* ---------- Что лежит на сайте (version.json кладёт deploy.ps1 вместе с APK) ---------- */
+  let site = null; // { apk: { code, name, size, sha256 }, web, at, apkLive: true | false | null }
+  async function loadSite() {
+    try {
+      const r = await fetch(`version.json?x=${Date.now()}`, { cache: 'no-store' });
+      if (!r.ok) throw new Error('no version.json');
+      site = { ...(await r.json()), apkLive: null };
+    } catch (e) { site = null; }
+  }
+
+  /**
+   * Сайт уже отдаёт именно этот APK? После выкладки GitHub обновляет файлы не сразу —
+   * если сообщить об обновлении раньше, люди скачают старую версию и застрянут на экране «Обновить».
+   * Скачиваем файл (~1,5 МБ) и сравниваем SHA-256. Только когда есть что предлагать.
+   */
+  async function verifyApk() {
+    const a = site && site.apk;
+    if (!a || !a.sha256 || !(a.code > ((cfg && cfg.apk && cfg.apk.code) || 0))) return;
+    try {
+      const r = await fetch(`${APK_LINK}?x=${Date.now()}`, { cache: 'no-store' });
+      if (!r.ok) throw new Error('apk');
+      const hash = await crypto.subtle.digest('SHA-256', await r.arrayBuffer());
+      const hex = [...new Uint8Array(hash)].map((b) => b.toString(16).padStart(2, '0')).join('');
+      site.apkLive = hex === a.sha256;
+    } catch (e) { site.apkLive = null; }
+  }
+
+  function apkSiteHtml(c) {
+    const s = site && site.apk;
+    if (!s) return '<p class="muted small">Не удалось узнать, какой APK лежит на сайте (файл version.json появится после следующей выкладки). Пока можно вписать версию вручную ниже.</p>';
+    const cur = (c.apk && c.apk.code) || 0;
+    let h = `<p class="small" style="margin:0">На сайте лежит: <b>APK ${esc(s.name)}</b> (номер ${s.code})${site.at ? `, выложен ${when(Date.parse(site.at))}` : ''}</p>`;
+    if (s.code > cur) {
+      if (site.apkLive === 'checking') {
+        h += '<p class="muted small" style="margin:0">Проверяю, что сайт уже отдаёт этот файл…</p>';
+      } else if (site.apkLive === false) {
+        h += '<p class="warn small" style="margin:0">Файл на сайте ещё обновляется — подожди пару минут и обнови страницу. Сейчас сообщать рано: люди скачали бы старую версию.</p>';
+      } else {
+        if (site.apkLive !== true) h += '<p class="muted small" style="margin:0">Не получилось проверить файл на сайте — убедись, что прошло хотя бы несколько минут после выкладки.</p>';
+        h += `<label class="check"><input type="checkbox" id="apk-force-new"> Обязательное — старая версия не откроется, пока не обновят</label>
+          <button class="btn primary" data-s="apk-apply">Сообщить всем: обновление до ${esc(s.name)}</button>
+          <p class="muted small" style="margin:0">У всех с APK при следующем запуске появится кнопка «Обновить».</p>`;
+      }
+    } else if (s.code === cur) {
+      h += '<p class="small" style="margin:0;color:var(--primary);font-weight:600">✓ Все получают последнюю версию</p>';
+    } else {
+      h += `<p class="warn small" style="margin:0">Предлагается номер ${cur}, а на сайте только ${s.code} — люди увидят «Обновить», но скачают старый файл.</p>
+        <button class="btn tonal" data-s="apk-apply">Вернуть как на сайте (${esc(s.name)})</button>`;
+    }
+    return h;
+  }
+
+  /* ---------- Кто на какой версии ---------- */
+  const VKIND = { android: 'APK', ios: 'iPhone', 'web-android': 'Android, браузер', web: 'Браузер' };
+  function versionsHtml() {
+    // Устройства людей с открытым доступом: у владельца — каждое его устройство отдельно
+    const groups = new Map();
+    let none = 0;
+    for (const it of items) {
+      if (isClosed(it)) continue;
+      const devs = (it.devices || []).length ? it.devices
+        : it.device && it.platform ? [{ platform: it.platform, version: it.version }] : [];
+      if (!devs.length) { none++; continue; }
+      for (const d of devs) {
+        const key = `${d.platform || '?'}|${d.version || '?'}`;
+        if (!groups.has(key)) groups.set(key, { platform: d.platform, version: d.version, names: [] });
+        groups.get(key).names.push(it.name);
+      }
+    }
+    if (!groups.size) return '<p class="muted">Пока никто не входил.</p>';
+    const latestApk = (site && site.apk && site.apk.name) || (cfg && cfg.apk && cfg.apk.name) || '';
+    const latestWeb = (site && site.web) || '';
+    const order = { android: 0, ios: 1, 'web-android': 2, web: 3 };
+    const rows = [...groups.values()].sort((a, b) =>
+      ((order[a.platform] ?? 9) - (order[b.platform] ?? 9)) || (verNum(b.version) - verNum(a.version)));
+    const html = rows.map((g) => {
+      const latest = g.platform === 'android' ? latestApk : latestWeb;
+      const tag = !latest || !g.version ? ''
+        : verNum(g.version) >= verNum(latest) ? '<span class="tag ok">последняя</span>'
+        : '<span class="tag bad">старая</span>';
+      const names = [...new Set(g.names)].sort((a, b) => a.localeCompare(b, 'ru'));
+      return `<div class="vrow">
+        <div class="vhead"><b>${esc(VKIND[g.platform] || g.platform || '?')} ${esc(g.version || '')}</b>${tag}<span class="vn">${g.names.length}</span></div>
+        <div class="vwho">${names.map(esc).join(', ')}</div>
+      </div>`;
+    }).join('');
+    return `<div class="vlist">${html}</div>${none ? `<p class="muted small" style="margin:0">Ещё не входили: ${none}</p>` : ''}`;
+  }
+
+  /* ---------- Записи человека (только просмотр) ---------- */
+  /* Деньги считаются тем же кодом, что и в приложении: берём из app.js кусок между calc:begin и calc:end
+     (его же проверяют тесты) — так страница управления и приложение не разойдутся в расчётах. */
+  let CALC = null;
+  async function calcLib() {
+    if (CALC) return CALC;
+    const src = await (await fetch(`app.js?x=${Date.now()}`, { cache: 'no-store' })).text();
+    const a = src.indexOf('/* ==== calc:begin'), b = src.indexOf('/* ==== calc:end ==== */');
+    if (a < 0 || b < a) throw new Error('calc');
+    CALC = new Function(`${src.slice(a, b)}\nreturn { dayOf, ymd, iso, payPeriod, monthIndexOf, monthFirst, daysInMonth, worked, summarizeIn, payoutIn, reconcile };`)();
+    return CALC;
+  }
+  const MONTHS = ['Январь', 'Февраль', 'Март', 'Апрель', 'Май', 'Июнь', 'Июль', 'Август', 'Сентябрь', 'Октябрь', 'Ноябрь', 'Декабрь'];
+  const MONTHS_GEN = ['января', 'февраля', 'марта', 'апреля', 'мая', 'июня', 'июля', 'августа', 'сентября', 'октября', 'ноября', 'декабря'];
+  const WD = ['вс', 'пн', 'вт', 'ср', 'чт', 'пт', 'сб'];
+  const zl = (v) => `${new Intl.NumberFormat('ru-RU', { minimumFractionDigits: 2, maximumFractionDigits: 2 }).format(v)} zł`;
+  const rt = (v) => new Intl.NumberFormat('ru-RU', { minimumFractionDigits: 2, maximumFractionDigits: 2 }).format(v);
+
+  async function openRecords(it, keepMonth) {
+    if (!keepMonth) openSheet({ kind: 'records', item: it, loading: true });
+    try {
+      const [r, C] = await Promise.all([call(`/admin/records?code=${encodeURIComponent(it.code)}`), calcLib()]);
+      const entries = {};
+      for (const [k, d] of Object.entries(r.days || {})) {
+        if (d.del) continue;
+        entries[k] = { points: d.p || 0, machines: d.m || 0, start: d.s ?? null, end: d.e ?? null, note: d.n || '', z: d.z || [] };
+      }
+      const meta = r.meta || {};
+      const rates = meta.rates && meta.rates.point > 0 ? meta.rates : { point: 2.9, machine: 35 };
+      const zabka = typeof meta.zabka === 'boolean' ? meta.zabka : Object.values(entries).some((x) => x.machines > 0);
+      // Начинаем с последнего месяца, где есть записи (или с текущего)
+      const keys = Object.keys(entries).sort();
+      const last = keys.length ? keys[keys.length - 1] : isoDate(Date.now());
+      const [y, m] = last.split('-').map(Number);
+      const months = [...new Set(keys.map((k) => k.slice(0, 7)))];
+      sheet = { kind: 'records', item: it, C, entries, rates, zabka, paid: r.paid || {}, header: meta.header || '', at: r.at, month: keepMonth ?? y * 12 + m - 1, months };
+    } catch (e) {
+      sheet = { kind: 'records', item: it, error: e.message === 'no_records' ? 'Записи на сервере ещё не включены.' : 'Не удалось загрузить записи.' };
+    }
+    if (sheet && sheet.kind === 'records') openSheet(sheet);
+  }
+
+  function recordsHtml(s) {
+    const it = s.item;
+    const head = `<button class="x" data-close aria-label="Закрыть">✕</button><h2>Записи · ${esc(it.name)}</h2>`;
+    if (s.loading) return `${head}<p class="muted">Загружаю…</p>`;
+    if (s.error) return `${head}<p class="err">${esc(s.error)}</p>`;
+    const C = s.C;
+    const y = Math.floor(s.month / 12), m = s.month % 12 + 1, n = C.daysInMonth(y, m);
+    const halves = [{ start: C.dayOf(y, m, 1), end: C.dayOf(y, m, 15) }, { start: C.dayOf(y, m, 16), end: C.dayOf(y, m, n) }];
+    const halfHtml = (p) => {
+      const sm = C.summarizeIn(s.entries, p, s.zabka), pay = C.payoutIn(s.entries, p, s.rates, s.zabka);
+      const pd = s.paid[C.iso(p.start)];
+      const paid = pd && pd.v != null ? pd.v : null;
+      let rc = '<span class="muted">не указано</span>';
+      if (paid != null) {
+        const r = C.reconcile(pay.total, paid);
+        rc = r.status === 'ok' ? `<span class="rec-ok">${zl(paid)} ✓</span>`
+          : r.status === 'less' ? `<span class="rec-bad">${zl(paid)} · недоплатили ${zl(-r.diff)}</span>`
+          : `<span class="rec-ok">${zl(paid)} · больше на ${zl(r.diff)}</span>`;
+      }
+      return `<div class="rec-half">
+        <h4>Работа ${C.ymd(p.start).d}–${C.ymd(p.end).d} ${MONTHS_GEN[m - 1]} → выплата ${pay.paidNow ? `1–15 ${MONTHS_GEN[m % 12]}` : `16–${n} ${MONTHS_GEN[m - 1]}`}</h4>
+        <div class="row2"><span>Рабочих дней</span><span>${sm.workDays}</span></div>
+        <div class="row2"><span>Точки ${pay.points} × ${rt(s.rates.point)}</span><span>${zl(pay.pointsMoney)}</span></div>
+        ${s.zabka ? (pay.paidNow
+          ? `<div class="row2"><span>Жабки за весь ${MONTHS[m - 1].toLowerCase()} ${pay.machines} × ${rt(s.rates.machine)}</span><span>${zl(pay.machinesMoney)}</span></div>`
+          : `<div class="row2"><span>Жабки ${pay.machines} (войдут в выплату за 16–${n})</span><span class="muted">${zl(pay.machinesMoney)}</span></div>`) : ''}
+        <div class="row2 tot"><span>К выплате</span><span>${zl(pay.total)}</span></div>
+        <div class="row2"><span>Пришло на счёт</span>${rc}</div>
+      </div>`;
+    };
+    const rows = [];
+    for (let d = 1; d <= n; d++) {
+      const k = `${y}-${p2(m)}-${p2(d)}`, x = s.entries[k];
+      if (!x) continue;
+      const wd = WD[new Date(y, m - 1, d).getDay()];
+      rows.push(`<tr data-rd="${k}" title="Нажми, чтобы исправить"><td>${p2(d)}.${p2(m)} ${wd}</td><td class="n">${x.points || '—'}</td>${s.zabka ? `<td class="n">${x.machines || '—'}</td>` : ''}<td class="rnote">${esc(x.note || '')}${(x.z || []).map((i) =>
+          `<div class="zs">${esc(i.t)} · ${i.a ? '<span class="rec-ok">✓ отчёт отправлен</span>' : '<span class="muted">отчёт не отправлен</span>'}</div>`).join('')}</td></tr>`);
+    }
+    if (s.edit) return `${head}${editDayHtml(s)}`;
+    const ym = `${y}-${p2(m)}`;
+    const prevM = s.months.filter((k) => k < ym).pop(), nextM = s.months.find((k) => k > ym);
+    return `${head}
+      <p class="muted small" style="margin:0">${s.at ? `Последняя синхронизация: ${when(s.at)}.` : 'С этого кода ещё ни разу не синхронизировались — записи появятся, когда человек откроет новую версию приложения с интернетом.'} Нажми на день, чтобы исправить.</p>
+      <div class="rec-nav">
+        <button data-rm="${prevM || ''}" ${prevM ? '' : 'disabled'} aria-label="Предыдущий месяц с записями">‹</button>
+        <b>${MONTHS[m - 1]} ${y}</b>
+        <button data-rm="${nextM || ''}" ${nextM ? '' : 'disabled'} aria-label="Следующий месяц с записями">›</button>
+      </div>
+      <div class="rec-halves">${halves.map(halfHtml).join('')}</div>
+      ${rows.length ? `<table class="rec-table"><thead><tr><th>Дата</th><th style="text-align:right">Точки</th>${s.zabka ? '<th style="text-align:right">Жабка</th>' : ''}<th>Заметка</th></tr></thead>
+        <tbody>${rows.join('')}</tbody></table>` : '<p class="muted">В этом месяце записей нет.</p>'}
+      <button class="btn tonal" data-re="new">+ Добавить или исправить день</button>
+      <button class="link" data-re="restore" style="align-self:flex-start">Вернуть пропавшие дни из резервной копии</button>
+      ${s.header ? `<div><label class="lbl">Шапка отчёта</label><div class="rec-meta">${esc(s.header)}</div></div>` : ''}
+      <p class="muted small" style="margin:0">Ставки: ${rt(s.rates.point)} zł за точку${s.zabka ? `, ${rt(s.rates.machine)} zł за автомат Жабки` : ' · Жабка выключена'}${s.months.length ? ` · месяцев с записями: ${s.months.length}` : ''}</p>`;
+  }
+
+  /* ---------- Исправить день у человека ---------- */
+
+  function editDayHtml(s) {
+    const e = s.edit, x = s.entries[e.date] || {};
+    const [ey, em, ed] = e.date.split('-');
+    return `<div class="rec-edit">
+      <h3 style="margin:0">${x.points != null ? 'Исправить день' : 'Добавить день'} · ${ed}.${em}.${ey}</h3>
+      <label class="lbl" for="re-date">Дата</label>
+      <input class="field" id="re-date" type="date" value="${e.date}">
+      <div class="two">
+        <div><label class="lbl" for="re-p">Точки</label><input class="field" id="re-p" inputmode="numeric" value="${x.points || ''}" placeholder="0"></div>
+        <div><label class="lbl" for="re-m">Жабка</label>
+          <div class="re-step"><button data-re="m-" aria-label="Меньше">−</button><input class="field" id="re-m" inputmode="numeric" value="${x.machines || ''}" placeholder="0"><button data-re="m+" aria-label="Больше">+</button></div></div>
+      </div>
+      <label class="lbl" for="re-n">Заметка</label>
+      <textarea class="field" id="re-n" rows="2" maxlength="2000">${esc(x.note || '')}</textarea>
+      ${s.zabka ? '' : '<p class="muted small" style="margin:0">У человека раздел Жабки выключен — если добавишь Жабку, он включится, иначе он её не увидит.</p>'}
+      <p class="muted small" style="margin:0">Правка придёт на телефон человека при следующем открытии приложения с интернетом. Если он в это же время меняет этот же день у себя, останется более позднее изменение.</p>
+      <p class="err" id="re-err"></p>
+      <div class="btn-row">
+        <button class="btn tonal" data-re="cancel">Отмена</button>
+        <button class="btn primary" data-re="save">Сохранить</button>
+      </div>
+      ${s.entries[e.date] ? '<button class="link" data-re="clear" style="color:var(--error)">Очистить этот день</button>' : ''}
+    </div>`;
+  }
+
+  /** Обработать кнопки формы правки. true — нажатие было здесь. */
+  async function onEditClick(b) {
+    const s = sheet, act = b.dataset.re;
+    if (act === 'new') {
+      const today = isoDate(Date.now());
+      const y = Math.floor(s.month / 12), mo = s.month % 12 + 1;
+      s.edit = { date: today.startsWith(`${y}-${p2(mo)}`) ? today : `${y}-${p2(mo)}-01` };
+      openSheet(s);
+      return;
+    }
+    if (act === 'cancel') { s.edit = null; openSheet(s); return; }
+    if (act === 'restore') {
+      // Из резервной копии возвращаются только дни, которых сейчас нет (пропали или стёрты), — существующие не трогаются
+      if (backups == null) await loadBackups();
+      if (!backups.length) { toast('Резервных копий пока нет'); return; }
+      const day = await dialog({
+        title: 'Из какой копии?',
+        text: `Есть копии за: ${backups.slice(0, 7).map((b) => dayRu(b.day)).join(', ')}. Впиши дату в виде ГГГГ-ММ-ДД.`,
+        field: { kind: 'text', value: backups[0].day, max: 10, placeholder: 'ГГГГ-ММ-ДД', required: 'Впиши дату' },
+      });
+      if (!day) return;
+      try {
+        const dry = await call('/admin/restore', 'POST', { day: day.trim(), code: s.item.code, dry: true });
+        const n = dry.days.length + dry.paid.length + (dry.meta ? 1 : 0);
+        if (!n) { toast('В этой копии нет ничего, чего не хватает сейчас'); return; }
+        const list = dry.days.map(dayRu).join(', ');
+        if (!await dialog({ title: 'Вернуть из копии?', text: `${dry.days.length ? `Дни: ${list}.` : ''}${dry.paid.length ? ` Суммы «Пришло на счёт»: ${dry.paid.length}.` : ''}${dry.meta ? ' Настройки.' : ''} Дни, которые есть сейчас, не изменятся.`, ok: 'Вернуть' })) return;
+        await call('/admin/restore', 'POST', { day: day.trim(), code: s.item.code });
+        await openRecords(s.item, s.month);
+        toast('Возвращено — придёт человеку при следующей синхронизации');
+      } catch (e) { toast(e.message === 'not_found' ? 'Нет копии за эту дату' : e.message === 'not_in_backup' ? 'Этого кода нет в копии' : 'Ошибка'); }
+      return;
+    }
+    if (act === 'm-' || act === 'm+') {
+      const inp = document.getElementById('re-m');
+      inp.value = String(Math.max(0, (parseInt(inp.value, 10) || 0) + (act === 'm+' ? 1 : -1)) || '');
+      return;
+    }
+    const err = document.getElementById('re-err');
+    const date = document.getElementById('re-date').value;
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) { err.textContent = 'Выбери дату'; return; }
+    let day;
+    if (act === 'clear') {
+      if (!await dialog({ title: 'Очистить день?', text: `У «${s.item.name}» за ${date.split('-').reverse().join('.')} не останется ни точек, ни Жабки, ни заметки.`, ok: 'Очистить', danger: true })) return;
+      day = { p: 0, m: 0, s: null, e: null, n: '' };
+    } else {
+      const int = (id) => { const v = document.getElementById(id).value.trim(); return v === '' ? 0 : /^\d+$/.test(v) ? Number(v) : NaN; };
+      day = { p: int('re-p'), m: int('re-m'), s: (s.entries[date] || {}).start ?? null, e: (s.entries[date] || {}).end ?? null, n: document.getElementById('re-n').value.trim() };
+      if (!Number.isFinite(day.p) || !Number.isFinite(day.m)) { err.textContent = 'Точки и Жабка — целые числа'; return; }
+    }
+    b.disabled = true;
+    try {
+      await call('/admin/records/day', 'POST', { code: s.item.code, date, day, zabkaOn: day.m > 0 && !s.zabka });
+      const [y, mo] = date.split('-').map(Number);
+      await openRecords(s.item, y * 12 + mo - 1);
+      toast(act === 'clear' ? 'День очищен' : 'Сохранено — придёт человеку при следующей синхронизации');
+    } catch (e) {
+      b.disabled = false;
+      err.textContent = 'Не получилось сохранить';
+    }
+  }
+
+  // Выбрали другую дату в форме — подставляем, что уже записано в этот день
+  document.addEventListener('change', (ev) => {
+    if (ev.target.id !== 're-date' || !sheet || !sheet.edit || !/^\d{4}-\d{2}-\d{2}$/.test(ev.target.value)) return;
+    sheet.edit.date = ev.target.value;
+    openSheet(sheet);
+  });
+
+  function sheetHtml() {
+    if (!sheet) return '';
+    if (sheet.kind === 'records') {
+      return `<div class="sheet-bg" data-close><div class="sheet rec-sheet" role="dialog" aria-modal="true" aria-label="Записи">${recordsHtml(sheet)}</div></div>`;
+    }
+    if (sheet.kind === 'code') {
+      const it = sheet.item;
+      return `<div class="sheet-bg" data-close><div class="sheet" role="dialog" aria-modal="true" aria-label="${esc(sheet.title)}">
+        <button class="x" data-close aria-label="Закрыть">✕</button>
+        <h2>${esc(sheet.title)}</h2>
+        <p class="muted">Код для «${esc(it.name)}». Отправь человеку приглашение — там ссылка на приложение и этот код.</p>
+        <div class="bigcode">${esc(it.code)}</div>
+        <button class="btn primary" data-a="invite" data-c="${esc(it.code)}">Копировать приглашение</button>
+        <button class="btn tonal" data-close>Готово</button>
+      </div></div>`;
+    }
+    const hasOwner = items.some((i) => i.owner);
+    return `<div class="sheet-bg" data-close><div class="sheet" role="dialog" aria-modal="true" aria-label="Новый код">
+      <button class="x" data-close aria-label="Закрыть">✕</button>
+      <h2>Новый код</h2>
+      <label class="lbl" for="name">Имя</label>
+      <input class="field" id="name" placeholder="Например: Шеф" maxlength="60" autocomplete="off">
+      <label class="lbl" for="note">Заметка — видишь только ты</label>
+      <input class="field" id="note" placeholder="Необязательно" maxlength="200" autocomplete="off">
+      <label class="lbl" for="exp">Действует до — необязательно</label>
+      <input class="field" id="exp" type="date" min="${isoDate(Date.now())}">
+      ${hasOwner ? '' : `<label class="check"><input type="checkbox" id="owner" checked> Это мой код (владелец, его нельзя отключить)</label>`}
+      <p class="err" id="err"></p>
+      <button class="btn primary" id="create">Создать код</button>
+    </div></div>`;
+  }
+  /**
+   * Своё окно вместо prompt/confirm/alert.
+   *   dialog({ title, text, ok, danger })                                   → true / null
+   *   dialog({ title, text, field: { kind: 'text'|'note'|'date', value } }) → строка / null
+   * Для даты есть быстрые кнопки «+7 дней», «+30 дней», «до конца месяца», «без срока».
+   */
+  function dialog(o) {
+    return new Promise((resolve) => {
+      const root = document.getElementById('dlg');
+      const f = o.field;
+      const fieldHtml = !f ? ''
+        : f.kind === 'note' ? `<textarea class="field" id="dlg-in" rows="4" maxlength="${f.max || 200}" placeholder="${esc(f.placeholder || '')}">${esc(f.value || '')}</textarea>`
+        : f.kind === 'date' ? `<input class="field" id="dlg-in" type="date" min="${isoDate(Date.now())}" value="${esc(f.value || '')}">
+            <div class="quick">
+              <button class="chip" data-q="7">+7 дней</button>
+              <button class="chip" data-q="30">+30 дней</button>
+              <button class="chip" data-q="eom">до конца месяца</button>
+              <button class="chip" data-q="none">без срока</button>
+            </div>`
+        : `<input class="field" id="dlg-in" maxlength="${f.max || 60}" placeholder="${esc(f.placeholder || '')}" value="${esc(f.value || '')}" autocomplete="off">`;
+      root.innerHTML = `<div class="sheet-bg"><div class="sheet" role="dialog" aria-modal="true" aria-label="${esc(o.title)}">
+        <button class="x" data-dlg="cancel" aria-label="Закрыть">✕</button>
+        <h2>${esc(o.title)}</h2>
+        ${o.text ? `<p class="q">${esc(o.text)}</p>` : ''}
+        ${fieldHtml}
+        <p class="err" id="dlg-err"></p>
+        <div class="btn-row">
+          <button class="btn tonal" data-dlg="cancel">Отмена</button>
+          <button class="btn ${o.danger ? 'danger' : 'primary'}" data-dlg="ok">${esc(o.ok || 'Сохранить')}</button>
+        </div>
+      </div></div>`;
+      const inp = document.getElementById('dlg-in');
+      const done = (v) => { root.innerHTML = ''; document.removeEventListener('keydown', onKey, true); resolve(v); };
+      const ok = () => {
+        if (!f) return done(true);
+        const v = inp.value;
+        if (f.required && !v.trim()) { document.getElementById('dlg-err').textContent = f.required; inp.focus(); return; }
+        done(v);
+      };
+      const onKey = (e) => {
+        if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); done(null); }
+        if (e.key === 'Enter' && (!f || f.kind !== 'note')) { e.preventDefault(); e.stopPropagation(); ok(); }
+      };
+      document.addEventListener('keydown', onKey, true);
+      root.firstElementChild.addEventListener('click', (e) => {
+        e.stopPropagation();
+        if (e.target === e.currentTarget) return done(null); // клик по затемнению
+        const b = e.target.closest('[data-dlg]');
+        if (b) return b.dataset.dlg === 'ok' ? ok() : done(null);
+        const q = e.target.closest('[data-q]');
+        if (q && inp) {
+          const d = new Date();
+          if (q.dataset.q === 'none') return done('');
+          if (q.dataset.q === 'eom') inp.value = isoDate(new Date(d.getFullYear(), d.getMonth() + 1, 0).getTime());
+          else inp.value = isoDate(d.getTime() + Number(q.dataset.q) * DAY);
+        }
+      });
+      if (inp) { inp.focus(); if (inp.select && f.kind === 'text') inp.select(); }
+      else root.querySelector('[data-dlg="ok"]').focus();
+    });
+  }
+
+  function openSheet(s) {
+    sheet = s;
+    document.getElementById('sheet').innerHTML = sheetHtml();
+    document.body.style.overflow = sheet ? 'hidden' : '';
+    const n = document.getElementById('name'); if (n) n.focus();
+  }
+
+  function render() {
+    root.innerHTML = `
+      <div class="head">
+        <div><h1>Управление</h1><p class="sub">Ewidencja Pracy · коды доступа</p></div>
+        <button class="link" id="logout">Выйти</button>
+      </div>
+      <div class="seg" role="tablist">
+        <button role="tab" data-tab="people" class="${tab === 'people' ? 'on' : ''}" aria-selected="${tab === 'people'}">Люди · ${items.length}</button>
+        <button role="tab" data-tab="settings" class="${tab === 'settings' ? 'on' : ''}" aria-selected="${tab === 'settings'}">Настройки${errors.length || backupLate() ? ' · ⚠' : ''}</button>
+      </div>
+      ${tab === 'settings' ? `<div class="setgrid">${settingsHtml()}</div>` : `
+        <div id="onl">${onlineBarHtml()}</div>
+        <div id="tiles">${tilesHtml()}</div>
+        <div class="tools">
+          <input class="field" id="search" type="search" placeholder="Поиск" value="${esc(query)}" aria-label="Поиск">
+          <button class="btn primary" id="new">+ Новый код</button>
+        </div>
+        <div id="chips">${chipsHtml()}</div>
+        <div class="list" id="list">${listHtml()}</div>`}`;
+    document.getElementById('sheet').innerHTML = sheetHtml();
+
+    document.getElementById('logout').onclick = () => { sessionStorage.removeItem('admin-pass'); pass = ''; openSheet(null); renderLogin(); };
+    const search = document.getElementById('search');
+    if (search) search.oninput = () => { query = search.value; document.getElementById('list').innerHTML = listHtml(); };
+  }
+
+  async function createCode() {
+    const name = document.getElementById('name').value.trim();
+    const note = document.getElementById('note').value.trim();
+    const expV = document.getElementById('exp').value;
+    const ownerBox = document.getElementById('owner');
+    const err = document.getElementById('err');
+    if (!name) { err.textContent = 'Впиши имя'; return; }
+    const owner = ownerBox ? ownerBox.checked : false;
+    try {
+      const r = await call('/admin/create', 'POST', { name, note, owner, expires: !owner && expV ? parseDate(expV) : null });
+      await load();
+      openSheet({ kind: 'code', item: r.item, title: 'Код создан' });
+    } catch (e) { err.textContent = 'Не получилось создать код'; }
+  }
+
+  async function saveCfg(data, msg) {
+    try { await call('/admin/config', 'POST', data); await load(); toast(msg || 'Сохранено'); }
+    catch (e) { toast('Ошибка'); }
+  }
+
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape' && sheet) openSheet(null);
+    if (e.key === 'Enter' && sheet && sheet.kind === 'new' && e.target.tagName === 'INPUT' && e.target.type !== 'checkbox') createCode();
+  });
+
+  document.addEventListener('click', async (ev) => {
+    // Окно: закрыть по крестику, «Готово» или клику по затемнению
+    const close = ev.target.closest('[data-close]');
+    if (close && (close !== ev.target.closest('.sheet-bg') || ev.target === close)) { openSheet(null); return; }
+    if (ev.target.closest('#new')) { openSheet({ kind: 'new' }); return; }
+    const re = ev.target.closest('[data-re]');
+    if (re && sheet && sheet.kind === 'records') { onEditClick(re); return; }
+    const rd = ev.target.closest('[data-rd]');
+    if (rd && sheet && sheet.kind === 'records' && !sheet.edit) { sheet.edit = { date: rd.dataset.rd }; openSheet(sheet); return; }
+    const rm = ev.target.closest('[data-rm]');
+    if (rm && sheet && sheet.kind === 'records' && rm.dataset.rm) {
+      const [ry, rmo] = rm.dataset.rm.split('-').map(Number);
+      sheet.month = ry * 12 + rmo - 1;
+      openSheet(sheet);
+      return;
+    }
+    if (ev.target.closest('#create')) { createCode(); return; }
+
+    const tb = ev.target.closest('[data-tab]');
+    if (tb) { tab = tb.dataset.tab; sessionStorage.setItem('admin-tab', tab); render(); window.scrollTo(0, 0); return; }
+
+    const f = ev.target.closest('[data-f]');
+    if (f) { filter = filter === f.dataset.f && f.dataset.f !== 'all' ? 'all' : f.dataset.f; refreshPeople(); return; }
+
+    const tg = ev.target.closest('[data-toggle]');
+    if (tg) {
+      const code = tg.dataset.toggle;
+      openCode = openCode === code ? null : code;
+      document.querySelectorAll('.person').forEach((p) => {
+        const on = p.dataset.p === openCode;
+        p.classList.toggle('open', on);
+        p.querySelector('.row').setAttribute('aria-expanded', on);
+      });
+      return;
+    }
+
+    const s = ev.target.closest('[data-s]');
+    if (s) {
+      const v = (id) => document.getElementById(id).value.trim();
+      switch (s.dataset.s) {
+        case 'msg-save':
+          if (!v('msg')) { toast('Впиши текст'); return; }
+          return saveCfg({ msg: v('msg') }, 'Объявление показано');
+        case 'msg-clear': return saveCfg({ msg: '' }, 'Объявление убрано');
+        case 'apk-save': {
+          const code = parseInt(v('apk-code'), 10) || 0;
+          if (!code || !v('apk-name') || !/^https?:\/\//.test(v('apk-url'))) { toast('Заполни версию, номер и ссылку'); return; }
+          const force = document.getElementById('apk-force').checked;
+          const keepMin = cfg && cfg.minApk && cfg.minApk < code ? cfg.minApk : 0;
+          return saveCfg({ apk: { code, name: v('apk-name'), url: v('apk-url') }, minApk: force ? code : keepMin });
+        }
+        case 'apk-apply': {
+          // Версию берём из version.json — то, что реально лежит на сайте
+          const a = site && site.apk;
+          if (!a || !a.code) { toast('Не знаю, какой APK на сайте'); return; }
+          const box = document.getElementById('apk-force-new');
+          const force = !!(box && box.checked);
+          // Обязательная версия не может быть выше той, что лежит на сайте, — иначе приложение не откроется ни у кого
+          const keepMin = cfg && cfg.minApk && cfg.minApk <= a.code ? cfg.minApk : 0;
+          return saveCfg({ apk: { code: a.code, name: a.name, url: APK_LINK }, minApk: force ? a.code : keepMin },
+            `Готово: всем предлагается ${a.name}`);
+        }
+        case 'offline-save': return saveCfg({ offlineDays: v('offline') });
+        case 'err-clear':
+          if (!await dialog({ title: 'Очистить журнал ошибок?', text: 'Записи об ошибках будут стёрты. Новые ошибки снова появятся здесь.', ok: 'Очистить' })) return;
+          try { await call('/admin/errors/clear', 'POST', {}); errors = []; render(); toast('Журнал очищен'); } catch (e) { toast('Ошибка'); }
+          return;
+        case 'bk-now':
+          try { const r = await call('/admin/backup/now', 'POST', {}); await loadBackups(); render(); toast(`Копия сделана: ${r.codes} ${plural(r.codes, 'человек', 'человека', 'человек')}, ${r.days} ${plural(r.days, 'день', 'дня', 'дней')}`); }
+          catch (e) { toast('Не получилось сделать копию'); }
+          return;
+        case 'bk-all':
+          try { const r = await call('/admin/export'); download(`ewidencja-zapisi-${isoDate(Date.now())}.json`, JSON.stringify(r, null, 1)); }
+          catch (e) { toast('Не получилось скачать'); }
+          return;
+        case 'bk-dl':
+          try { const r = await call(`/admin/backup?day=${encodeURIComponent(s.dataset.day)}`); download(`ewidencja-kopia-${s.dataset.day}.json`, JSON.stringify(r, null, 1)); }
+          catch (e) { toast('Не получилось скачать'); }
+          return;
+        case 'ar-restore': {
+          const a = archived.find((x) => x.code === s.dataset.c);
+          if (!a || !await dialog({ title: 'Вернуть код?', text: `«${a.name}» снова сможет войти по коду ${a.code}. Все его записи на месте.`, ok: 'Вернуть' })) return;
+          try { await call('/admin/archive', 'POST', { code: a.code, action: 'restore' }); await load(); toast('Код возвращён'); }
+          catch (e) { toast(e.message === 'code_taken' ? 'Этот номер кода уже занят' : 'Ошибка'); }
+          return;
+        }
+        case 'ar-purge': {
+          const a = archived.find((x) => x.code === s.dataset.c);
+          if (!a || !await dialog({ title: 'Стереть записи навсегда?', text: `Записи «${a.name}» будут стёрты с сервера. Они останутся только в резервных копиях — ещё 35 дней. Отменить это нельзя.`, ok: 'Стереть', danger: true })) return;
+          try { await call('/admin/archive', 'POST', { code: a.code, action: 'purge' }); await load(); toast('Стёрто'); }
+          catch (e) { toast('Ошибка'); }
+          return;
+        }
+        case 'mail-save': {
+          const list = v('mail-to').split(/[\s,;]+/).filter(Boolean);
+          const bad = list.filter((s) => !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(s));
+          if (bad.length) { toast(`Не похоже на адрес: ${bad[0]}`); return; }
+          return saveCfg({ mailTo: list }, 'Адреса сохранены');
+        }
+      }
+      return;
+    }
+
+    const b = ev.target.closest('[data-a]');
+    if (!b) return;
+    const code = b.dataset.c, action = b.dataset.a;
+    const it = items.find((i) => i.code === code) || (sheet && sheet.item && sheet.item.code === code ? sheet.item : null);
+    if (!it) return;
+    if (action === 'invite') { copy(invite(it)); return; }
+    if (action === 'records') { openRecords(it); return; }
+    if (action === 'zlist') {
+      let cur = [];
+      try { cur = ((await call(`/admin/records?code=${encodeURIComponent(code)}`)).meta || {}).zlist || []; }
+      catch (e) { toast('Не удалось загрузить список'); return; }
+      const v = await dialog({
+        title: `Жабки · ${it.name}`,
+        text: 'По одной Жабке в строке — так, как она уходит в WhatsApp (в конце приложение само допишет «przed/po»). Придёт человеку при следующей синхронизации.',
+        field: { kind: 'note', value: cur.join('\n'), max: 12000, placeholder: 'Bosch, Warszawa, Jutrzenki 105, ZG356-1' },
+      });
+      if (v === null || v.trim() === cur.join('\n')) return;
+      try {
+        const r = await call('/admin/zlist', 'POST', { code, list: v.split('\n') });
+        toast(`Сохранено: ${r.zlist.length} ${plural(r.zlist.length, 'Жабка', 'Жабки', 'Жабок')}`);
+      } catch (e) { toast('Ошибка'); }
+      return;
+    }
+    if (action === 'regen') {
+      if (!await dialog({ title: 'Сменить код?', text: `«${it.name}» получит новый код. Старый код ${it.code} сразу перестанет работать — человеку нужно будет ввести новый.`, ok: 'Сменить код' })) return;
+      try {
+        const r = await call('/admin/update', 'POST', { code, action: 'regen' });
+        if (openCode === code) openCode = r.code;
+        await load();
+        openSheet({ kind: 'code', item: { ...it, code: r.code }, title: 'Новый код' });
+      } catch (e) { toast('Ошибка'); }
+      return;
+    }
+    if (action === 'rename') {
+      const v = await dialog({ title: 'Переименовать', field: { kind: 'text', value: it.name, max: 60, placeholder: 'Имя', required: 'Впиши имя' } });
+      const name = (v || '').trim();
+      if (!name || name === it.name) return;
+      try {
+        await call('/admin/update', 'POST', { code, action: 'rename', name });
+        await load();
+        toast('Имя изменено');
+      } catch (e) { toast('Ошибка'); }
+      return;
+    }
+    if (action === 'note') {
+      const note = await dialog({
+        title: it.note ? 'Заметка' : 'Добавить заметку',
+        text: `Про «${it.name}». Видишь только ты. Оставь пустой, чтобы убрать.`,
+        field: { kind: 'note', value: it.note || '', max: 200, placeholder: 'Например: работает по выходным' },
+      });
+      if (note === null || note.trim() === (it.note || '')) return;
+      try { await call('/admin/update', 'POST', { code, action: 'note', note: note.trim() }); await load(); toast('Сохранено'); }
+      catch (e) { toast('Ошибка'); }
+      return;
+    }
+    if (action === 'expires') {
+      const s2 = await dialog({
+        title: 'Срок действия',
+        text: `До какого дня работает код «${it.name}». После этой даты приложение попросит новый код.${it.expires ? `\nСейчас: до ${dateOnly(it.expires)}.` : '\nСейчас: без срока.'}`,
+        field: { kind: 'date', value: it.expires ? isoDate(it.expires) : '' },
+      });
+      if (s2 === null) return;
+      const expires = s2.trim() ? parseDate(s2) : null;
+      if ((expires || null) === (it.expires || null)) return;
+      try { await call('/admin/update', 'POST', { code, action: 'expires', expires }); await load(); toast(expires ? `Действует до ${dateOnly(expires)}` : 'Без срока'); }
+      catch (e) { toast('Ошибка'); }
+      return;
+    }
+    const ask = {
+      disable: { title: 'Отключить доступ?', text: `«${it.name}» не сможет пользоваться приложением. Сработает при следующем запуске с интернетом. Включить обратно можно в любой момент.`, ok: 'Отключить', danger: true },
+      delete: { title: 'Удалить код?', text: `Код «${it.name}» перестанет работать и уйдёт в архив. Записи человека останутся на сервере — в Настройках → Архив код можно вернуть.`, ok: 'Удалить', danger: true },
+      unbind: { title: 'Выйти на всех устройствах?', text: `Приложение на всех устройствах с кодом «${it.name}» попросит ввести код заново. Записи на сервере останутся.`, ok: 'Выйти везде' },
+    }[action];
+    if (ask && !await dialog(ask)) return;
+    try {
+      await call('/admin/update', 'POST', { code, action });
+      if (action === 'delete' && openCode === code) openCode = null;
+      await load();
+      toast('Готово');
+    } catch (e) { toast('Ошибка'); }
+  });
+
+  if (pass) load().catch(() => renderLogin());
+  else renderLogin();

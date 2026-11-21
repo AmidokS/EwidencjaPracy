@@ -1,8 +1,9 @@
 'use strict';
+/* web/app.js собирается из частей web/src/NN-*.js (node tools/build-web.mjs) — правь части, а не app.js. */
 /* Учёт работы — PWA. Создатель: Artur Alimhulov.
    Данные хранятся на телефоне (localStorage) и копией на сервере под кодом доступа (см. «Записи на сервере»). */
 
-const VERSION = '4.6';
+const VERSION = '4.7';
 const STORE_KEY = 'uchet-raboty-v1';
 
 /* ==== calc:begin ====
@@ -945,6 +946,29 @@ function presence(on) {
   if (!on && navigator.sendBeacon && navigator.sendBeacon(AUTH_API + '/ping', new Blob([data], { type: 'text/plain' }))) return;
   fetch(AUTH_API + '/ping', { method: 'POST', body: data, headers: { 'Content-Type': 'text/plain' }, keepalive: true, cache: 'no-store' }).catch(() => {});
 }
+/* Ошибки приложения — в журнал ошибок владельца (админка → Настройки → «Ошибки»).
+   Не больше 3 за запуск и без повторов, только после входа по коду. */
+const reportedErrors = new Set();
+function reportError(where, msg) {
+  try {
+    if (!AUTH_API || !S.auth.ok || !S.auth.code || reportedErrors.size >= 3) return;
+    const key = `${where}|${msg}`;
+    if (reportedErrors.has(key)) return;
+    reportedErrors.add(key);
+    fetch(AUTH_API + '/log', {
+      method: 'POST', headers: { 'Content-Type': 'text/plain' }, keepalive: true, cache: 'no-store',
+      body: JSON.stringify({ code: S.auth.code, device: deviceId(), platform: platform(), version: VERSION, where, msg: String(msg).slice(0, 1500) }),
+    }).catch(() => {});
+  } catch (e) { /* журнал не должен ничего ломать */ }
+}
+window.addEventListener('error', (e) => {
+  if (!e.filename && e.message === 'Script error.') return; // чужие скрипты (расширения браузера) — не наше
+  reportError(`${(e.filename || '').split('/').pop()}:${e.lineno || 0}`, (e.error && e.error.stack) || e.message);
+});
+window.addEventListener('unhandledrejection', (e) => {
+  const r = e.reason;
+  reportError('promise', (r && (r.stack || r.message)) || String(r));
+});
 // Пока приложение открыто — раз в минуту «я в приложении» и подтянуть изменения
 // (правки коллеги под твоим кодом или из админки появятся без переоткрытия приложения)
 setInterval(() => { if (document.visibilityState === 'visible') { presence(true); syncNow(); } }, PING_EVERY);
