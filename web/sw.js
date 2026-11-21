@@ -1,6 +1,8 @@
 // Офлайн-работа: все файлы приложения хранятся в кеше телефона.
 // При каждом запуске кеш тихо обновляется из сети, если она есть.
-const CACHE = 'uchet-4.8-9445175b';
+const CACHE = 'uchet-4.9-33a447a0';
+// Здесь приложение оставляет адрес сервера, код и устройство — чтобы по уведомлению узнать текст объявления
+const AUTH_CACHE = 'ew-auth';
 const FILES = [
   './',
   './index.html',
@@ -23,7 +25,7 @@ self.addEventListener('install', (e) => {
 self.addEventListener('activate', (e) => {
   e.waitUntil(
     caches.keys()
-      .then((keys) => Promise.all(keys.filter((k) => k !== CACHE).map((k) => caches.delete(k))))
+      .then((keys) => Promise.all(keys.filter((k) => k !== CACHE && k !== AUTH_CACHE).map((k) => caches.delete(k))))
       .then(() => self.clients.claim())
   );
 });
@@ -46,4 +48,35 @@ self.addEventListener('fetch', (e) => {
       return cached || fresh;
     })
   );
+});
+
+/*
+ * Уведомления. Сервер присылает пустой push, когда владелец публикует объявление;
+ * текст спрашиваем у сервера сами (по коду и устройству, которые оставило приложение).
+ */
+self.addEventListener('push', (e) => { e.waitUntil(showAnnouncement()); });
+
+async function showAnnouncement() {
+  let a = null;
+  try { const r = await (await caches.open(AUTH_CACHE)).match('auth'); a = r ? await r.json() : null; } catch (err) { a = null; }
+  const pl = a && a.lang === 'pl';
+  let title = pl ? 'Ogłoszenie' : 'Объявление';
+  let body = pl ? 'Nowe ogłoszenie — otwórz aplikację' : 'Новое объявление — открой приложение';
+  let tag = 'msg';
+  try {
+    if (a && a.api && a.code) {
+      const res = await fetch(a.api + '/push/msg', { method: 'POST', headers: { 'Content-Type': 'text/plain' }, body: JSON.stringify({ code: a.code, device: a.device }) });
+      const r = await res.json();
+      if (r && r.msg && r.msg.text) { body = r.msg.text; tag = `msg-${r.msg.id}`; }
+    }
+  } catch (err) { /* без связи — покажем общий текст */ }
+  return self.registration.showNotification(title, { body, tag, icon: 'icons/icon-192.png', badge: 'icons/icon-192.png', lang: pl ? 'pl' : 'ru' });
+}
+
+self.addEventListener('notificationclick', (e) => {
+  e.notification.close();
+  e.waitUntil(self.clients.matchAll({ type: 'window', includeUncontrolled: true }).then((list) => {
+    const w = list.find((c) => 'focus' in c);
+    return w ? w.focus() : self.clients.openWindow('./');
+  }));
 });

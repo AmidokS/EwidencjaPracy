@@ -3,7 +3,7 @@
 /* Учёт работы — PWA. Создатель: Artur Alimhulov.
    Данные хранятся на телефоне (localStorage) и копией на сервере под кодом доступа (см. «Записи на сервере»). */
 
-const VERSION = '4.8';
+const VERSION = '4.9';
 const STORE_KEY = 'uchet-raboty-v1';
 
 /* ==== calc:begin ====
@@ -62,19 +62,56 @@ function summarizeIn(entries, p, zabka) {
 }
 
 /*
+ * Ставки. rates = { point, machine } — одна ставка на всё время; или с историей:
+ * rates.hist = [{ f: 'ГГГГ-ММ-ДД', point, machine }] по возрастанию f — с какого дня действует ставка
+ * (ставку подняли с 01.12 — дни до этого считаются по старой). День раньше первой записи — по первой.
+ */
+function rateOn(rates, e) {
+  const h = rates && rates.hist;
+  if (!h || !h.length) return { point: rates.point, machine: rates.machine };
+  const d = iso(e);
+  let r = h[0];
+  for (const x of h) { if (x.f <= d) r = x; else break; }
+  return { point: r.point, machine: r.machine };
+}
+
+/**
+ * Деньги за дни диапазона — каждый день по своей ставке — и разбивка по ставкам
+ * (pointsParts/machinesParts: [{ rate, n, money }] — «600 × 2,90 + 400 × 3,10»).
+ */
+function moneyIn(entries, p, rates, zabka) {
+  const pts = new Map(), mch = new Map();
+  for (let e = p.start; e <= p.end; e++) {
+    const x = entries[iso(e)];
+    if (!x) continue;
+    const r = rateOn(rates, e);
+    if (x.points) pts.set(r.point, (pts.get(r.point) || 0) + x.points);
+    if (zabka && x.machines) mch.set(r.machine, (mch.get(r.machine) || 0) + x.machines);
+  }
+  const parts = (m) => [...m].map(([rate, n]) => ({ rate, n, money: n * rate }));
+  const sum = (a) => a.reduce((s, x) => s + x.money, 0);
+  const pointsParts = parts(pts), machinesParts = parts(mch);
+  return { pointsMoney: sum(pointsParts), machinesMoney: sum(machinesParts), pointsParts, machinesParts };
+}
+
+/*
  * Выплата за отработанный период:
  *  работа 1–15     → деньги приходят 16–конец того же месяца: только точки;
  *  работа 16–конец → деньги приходят 1–15 следующего месяца: точки 16–конец + Жабки за ВЕСЬ месяц.
  * В 1–15 machines — Жабки этой половины (они войдут в выплату за 16–конец).
+ * Каждый день считается по ставке, действовавшей в тот день (см. rateOn).
  */
 function payoutIn(entries, p, rates, zabka) {
   const s = summarizeIn(entries, p, zabka);
   const mi = monthIndexOf(p.start), second = isSecondHalf(p);
+  const pm = moneyIn(entries, p, rates, zabka);
+  const mm = second ? moneyIn(entries, { start: monthFirst(mi), end: p.end }, rates, zabka) : pm;
   const machines = second ? summarizeIn(entries, { start: monthFirst(mi), end: p.end }, zabka).machines : s.machines;
-  const pointsMoney = s.points * rates.point;
-  const machinesMoney = machines * rates.machine;
-  return { points: s.points, pointsMoney, machines, machinesMoney, paidNow: second, zMonth: mi,
-    total: pointsMoney + (second ? machinesMoney : 0) };
+  return {
+    points: s.points, pointsMoney: pm.pointsMoney, pointsParts: pm.pointsParts,
+    machines, machinesMoney: mm.machinesMoney, machinesParts: mm.machinesParts,
+    paidNow: second, zMonth: mi, total: pm.pointsMoney + (second ? mm.machinesMoney : 0),
+  };
 }
 
 /** Сверка выплаты: сколько пришло по сравнению с расчётом (до копеек). */
@@ -88,6 +125,9 @@ function reconcile(expected, paid) {
 const DEFAULTS = {
   entries: {},
   rates: { point: 2.9, machine: 35 },
+  // История ставок: [{ f: 'ГГГГ-ММ-ДД', point, machine }] — с какого дня действует ставка. Пусто — ставка rates на всё время.
+  // Если история есть, rates — ставка на сегодня (её видят старые версии приложения).
+  rateHist: [],
   report: { points: true, machines: true, hours: false, polish: false },
   // zabka — раздел «Автоматы Жабки»: у новых пользователей выключен (Жабки делают немногие)
   settings: { lang: 'ru', palette: 0, theme: 'system', header: '', onboarded: false, zabka: false, zlist: [] },
@@ -102,6 +142,8 @@ const DEFAULTS = {
   sync: { since: 0, dirty: {}, deleted: {}, metaU: 0, metaFu: {}, metaDirty: false, at: 0, paidDirty: {}, dataCode: '', skew: 0 },
   // Сверка выплаты: сколько реально пришло за период. Ключ — первый день периода, v: null — стёрто.
   paid: {},
+  // Уведомления о новых объявлениях (Web Push): включены ли на этом устройстве и адрес подписки
+  push: { on: false, endpoint: '' },
 };
 
 let S = load();
@@ -113,6 +155,7 @@ function load() {
   if (raw && typeof raw === 'object') {
     Object.assign(s.entries, raw.entries || {});
     Object.assign(s.rates, raw.rates || {});
+    s.rateHist = Array.isArray(raw.rateHist) ? raw.rateHist : [];
     Object.assign(s.report, raw.report || {});
     Object.assign(s.settings, raw.settings || {});
     // Обновление со старой версии: у кого уже записаны Жабки — раздел остаётся включённым
@@ -124,6 +167,7 @@ function load() {
     Object.assign(s.sync, raw.sync || {});
     if (!s.sync.paidDirty) s.sync.paidDirty = {};
     Object.assign(s.paid, raw.paid || {});
+    Object.assign(s.push, raw.push || {});
     s.installHidden = !!raw.installHidden;
     s.msgHidden = raw.msgHidden || 0;
     s.reportHidden = raw.reportHidden || 0;
@@ -145,7 +189,12 @@ const sameZ = (a, b) => JSON.stringify(a || []) === JSON.stringify(b || []);
 /** Включён ли раздел «Автоматы Жабки» (Настройки). Выключен — Жабки нигде не видны и не считаются. */
 const Z = () => !!S.settings.zabka;
 const isWork = (x) => isWorkDay(x, Z());
-const dayMoney = (x) => x.points * S.rates.point + (Z() ? x.machines * S.rates.machine : 0);
+/** Ставки для расчёта денег: с историей, если она есть. */
+const R = () => (S.rateHist && S.rateHist.length ? { ...S.rates, hist: S.rateHist } : S.rates);
+/** Ставка, действовавшая в день e. */
+const rateFor = (e) => rateOn(R(), e);
+/** Заработок за день e — по ставке этого дня. */
+const dayMoney = (x, e) => { const r = rateFor(e); return x.points * r.point + (Z() ? x.machines * r.machine : 0); };
 
 const sameEntry = (a, b) => a.points === b.points && a.machines === b.machines && a.start === b.start && a.end === b.end && (a.note || '') === (b.note || '') && sameZ(a.z, b.z);
 
@@ -154,7 +203,7 @@ const sameEntry = (a, b) => a.points === b.points && a.machines === b.machines &
 const FMAP = [['points', 'p'], ['machines', 'm'], ['start', 's'], ['end', 'e'], ['note', 'n'], ['z', 'z']];
 const FEMPTY = { points: 0, machines: 0, start: null, end: null, note: '', z: [] };
 /** Поля настроек, которые синхронизируются по отдельности. */
-const META_F = ['rates', 'header', 'zabka', 'zlist'];
+const META_F = ['rates', 'rhist', 'header', 'zabka', 'zlist'];
 const sameField = (k, a, b) => (k === 'z' ? sameZ(a, b) : k === 'note' ? (a || '') === (b || '') : (a ?? null) === (b ?? null));
 /** Время изменения каждого поля записи. Старые записи: у всего дня одно время u; плана Жабок нет — 0. */
 function fuOf(x) {
@@ -217,8 +266,45 @@ function setPaid(key, v) {
 const paidOf = (p) => { const x = S.paid[iso(p.start)]; return x && x.v != null ? x.v : null; };
 
 const summarize = (p) => summarizeIn(S.entries, p, Z());
-const sumMoney = (s) => s.points * S.rates.point + s.machines * S.rates.machine;
-const payout = (p) => payoutIn(S.entries, p, S.rates, Z());
+/** Деньги за диапазон дней — каждый день по своей ставке: { pointsMoney, machinesMoney, …Parts }. */
+const moneyOf = (p) => moneyIn(S.entries, p, R(), Z());
+const payout = (p) => payoutIn(S.entries, p, R(), Z());
+
+/**
+ * Новая ставка с дня from (ГГГГ-ММ-ДД). Дни до него остаются по прежней ставке.
+ * Если истории ещё не было, прежняя ставка становится первой записью «с самого начала».
+ */
+function addRate(from, point, machine) {
+  const h = S.rateHist && S.rateHist.length ? S.rateHist.slice() : [{ f: '2000-01-01', point: S.rates.point, machine: S.rates.machine }];
+  const next = h.filter((x) => x.f !== from);
+  next.push({ f: from, point, machine });
+  next.sort((a, b) => (a.f < b.f ? -1 : 1));
+  setRateHist(next);
+}
+/** Ставка «с самого начала» (без истории — просто ставка) поменялась в поле Настроек. */
+function setBaseRate(key, v) {
+  if (S.rateHist && S.rateHist.length) {
+    const h = S.rateHist.map((x, i) => (i === 0 ? { ...x, [key]: v } : x));
+    S.rateHist = h;
+    S.rates = rateOn({ ...S.rates, hist: h }, todayDay());
+    metaChanged('rhist');
+  } else S.rates[key] = v;
+  metaChanged('rates');
+  save();
+}
+/** Записать историю ставок (одна запись — это просто ставка на всё время) и отправить на сервер. */
+function setRateHist(h) {
+  if (h.length <= 1) {
+    if (h.length) S.rates = { point: h[0].point, machine: h[0].machine };
+    S.rateHist = [];
+  } else {
+    S.rateHist = h;
+    S.rates = rateOn({ ...S.rates, hist: h }, todayDay());
+  }
+  metaChanged('rhist');
+  metaChanged('rates');
+  save();
+}
 
 /* ===================== Язык и формат ===================== */
 const isPl = () => S.settings.lang === 'pl';
@@ -485,7 +571,7 @@ function pointsMoneyFx(was) {
     if (!host) return;
     const el = document.createElement('div');
     el.className = `fx-money${d < 0 ? ' neg' : ''}`;
-    el.textContent = `${d > 0 ? '+' : '−'}${money(Math.abs(d) * S.rates.point)}`;
+    el.textContent = `${d > 0 ? '+' : '−'}${money(Math.abs(d) * rateFor(ui.day).point)}`;
     host.appendChild(el);
     setTimeout(() => el.remove(), 1300);
   }, 450);
@@ -973,6 +1059,72 @@ window.addEventListener('unhandledrejection', (e) => {
 // (правки коллеги под твоим кодом или из админки появятся без переоткрытия приложения)
 setInterval(() => { if (document.visibilityState === 'visible') { presence(true); syncNow(); } }, PING_EVERY);
 
+/* ===================== Уведомления (Web Push) ===================== */
+/* Владелец публикует объявление — на телефон приходит уведомление, даже если приложение закрыто.
+   iPhone: только если приложение добавлено на экран «Домой» (iOS 16.4+). */
+const pushSupported = () => 'serviceWorker' in navigator && 'PushManager' in window && 'Notification' in window;
+const pushNeedsInstall = () => isIOS() && !isStandalone();
+
+/** Оставить фоновой части (sw.js) адрес сервера, код и устройство — по уведомлению она узнаёт текст объявления. */
+function savePushAuth() {
+  if (!('caches' in window)) return;
+  caches.open('ew-auth').then((c) => (AUTH_API && S.auth.ok && S.auth.code
+    ? c.put('auth', new Response(JSON.stringify({ api: AUTH_API, code: S.auth.code, device: deviceId(), lang: S.settings.lang })))
+    : c.delete('auth'))).catch(() => {});
+}
+
+const b64uBytes = (s) => Uint8Array.from(atob(s.replace(/-/g, '+').replace(/_/g, '/') + '==='.slice((s.length + 3) % 4)), (c) => c.charCodeAt(0));
+
+/** Включить уведомления. Возвращает 'ok', 'denied', 'unsupported' или 'error'. */
+async function pushOn() {
+  if (!pushSupported() || pushNeedsInstall()) return 'unsupported';
+  const perm = await Notification.requestPermission();
+  if (perm !== 'granted') return perm === 'denied' ? 'denied' : 'error';
+  const reg = await navigator.serviceWorker.ready;
+  const k = await (await fetch(AUTH_API + '/push/key', { cache: 'no-store' })).json();
+  if (!k || !k.ok) return 'error';
+  const key = b64uBytes(k.key);
+  let sub = await reg.pushManager.getSubscription();
+  // Подписка со старым ключом сервера — пересоздаём
+  if (sub && sub.options && sub.options.applicationServerKey && btoa(String.fromCharCode(...new Uint8Array(sub.options.applicationServerKey))) !== btoa(String.fromCharCode(...key))) {
+    await sub.unsubscribe(); sub = null;
+  }
+  if (!sub) sub = await reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: key });
+  const r = await api('/push/subscribe', { code: S.auth.code, device: deviceId(), sub: sub.toJSON() });
+  if (!r || !r.ok) return 'error';
+  S.push = { on: true, endpoint: sub.endpoint };
+  save();
+  savePushAuth();
+  return 'ok';
+}
+
+async function pushOff() {
+  try {
+    const reg = await navigator.serviceWorker.ready;
+    const sub = await reg.pushManager.getSubscription();
+    if (sub) await sub.unsubscribe();
+  } catch (e) { /* ignore */ }
+  try { await api('/push/unsubscribe', { code: S.auth.code, device: deviceId() }); } catch (e) { /* без связи — сервер удалит подписку сам, когда она перестанет работать */ }
+  S.push = { on: false, endpoint: '' };
+  save();
+}
+
+/** При запуске: браузер мог обновить подписку — сообщаем серверу новую. */
+async function pushRefresh() {
+  savePushAuth();
+  if (!S.push.on || !pushSupported() || !AUTH_API || !S.auth.ok) return;
+  try {
+    if (Notification.permission !== 'granted') { S.push = { on: false, endpoint: '' }; save(); return; }
+    const reg = await navigator.serviceWorker.ready;
+    const sub = await reg.pushManager.getSubscription();
+    if (!sub) { await pushOn(); return; }
+    if (sub.endpoint !== S.push.endpoint) {
+      const r = await api('/push/subscribe', { code: S.auth.code, device: deviceId(), sub: sub.toJSON() });
+      if (r && r.ok) { S.push.endpoint = sub.endpoint; save(); }
+    }
+  } catch (e) { /* без связи — в следующий раз */ }
+}
+
 /** Запомнить ответ сервера: имя, срок кода, общие настройки (объявление, лимит без интернета). */
 function acceptServer(r) {
   S.auth.lastOk = Date.now();
@@ -981,6 +1133,7 @@ function acceptServer(r) {
   if (r.cfg) S.auth.cfg = r.cfg;
   S.auth.owner = !!r.owner;
   if ('rank' in r) S.auth.rank = !!r.rank;
+  savePushAuth();
 }
 
 /* ===================== Записи на сервере (синхронизация) ===================== */
@@ -1025,7 +1178,7 @@ async function syncNow(force) {
   // Время каждого поля настроек; поле, которое ни разу не меняли здесь, — со старым общим временем
   const mu = {};
   for (const f of META_F) mu[f] = (z.metaFu && z.metaFu[f]) || z.metaU || 1;
-  const meta = sendMeta ? { rates: S.rates, header: S.settings.header || '', zabka: !!S.settings.zabka, zlist: S.settings.zlist || [], u: z.metaU || 1, mu } : null;
+  const meta = sendMeta ? { rates: S.rates, rhist: S.rateHist || [], header: S.settings.header || '', zabka: !!S.settings.zabka, zlist: S.settings.zlist || [], u: z.metaU || 1, mu } : null;
   const paid = {};
   for (const k of all ? Object.keys(S.paid) : Object.keys(z.paidDirty)) if (S.paid[k]) paid[k] = S.paid[k];
   // Снимаем отметку «не отправлено» заранее: если за время запроса день снова изменят, отметка встанет снова
@@ -1076,6 +1229,12 @@ async function syncNow(force) {
       const rt = m.rates || {};
       if (take.rates && rt.point > 0 && rt.machine > 0 && (rt.point !== S.rates.point || rt.machine !== S.rates.machine)) {
         S.rates = { point: rt.point, machine: rt.machine }; changedUi = true;
+      }
+      // История ставок («с какого дня действует»): поменяли здесь, на другом устройстве или из админки для всех
+      if (take.rhist && Array.isArray(m.rhist) && JSON.stringify(m.rhist) !== JSON.stringify(S.rateHist || [])) {
+        S.rateHist = m.rhist.length > 1 ? m.rhist : [];
+        if (m.rhist.length === 1) S.rates = { point: m.rhist[0].point, machine: m.rhist[0].machine };
+        changedUi = true;
       }
       if (take.header && typeof m.header === 'string' && m.header !== S.settings.header) {
         S.settings.header = m.header; changedUi = true;
@@ -1139,7 +1298,7 @@ async function switchData(code) {
   }
   try {
     localStorage.setItem(`uchet-raboty-stash-${prev}`, JSON.stringify({
-      at: Date.now(), code: prev, sent, entries: S.entries, paid: S.paid, rates: S.rates, header: S.settings.header || '',
+      at: Date.now(), code: prev, sent, entries: S.entries, paid: S.paid, rates: S.rates, rateHist: S.rateHist, header: S.settings.header || '',
     }));
   } catch (e) { /* нет места — копия не обязательна, записи уже на сервере */ }
   S.entries = {};
@@ -1147,6 +1306,7 @@ async function switchData(code) {
   S.settings.header = '';
   S.settings.zabka = false;
   S.settings.zlist = [];
+  S.rateHist = []; // история ставок — у каждого своя, придёт с сервера
   S.sync = { ...JSON.parse(JSON.stringify(DEFAULTS.sync)), dataCode: code };
   syncedOnce = false;
   save();
@@ -1159,6 +1319,7 @@ async function switchData(code) {
  */
 async function logout() {
   if (!(await syncNow())) return false;
+  if (S.push.on) await pushOff(); // уведомления этого кода на этом устройстве больше не нужны
   presence(false);
   try { await api('/logout', { code: S.auth.code, device: deviceId() }); } catch (e) { /* не страшно: устройство само отвалится при «Выйти на всех» */ }
   S.entries = {};
@@ -1166,8 +1327,10 @@ async function logout() {
   S.settings.header = '';
   S.settings.zabka = false;
   S.settings.zlist = [];
+  S.rateHist = []; // история ставок — у каждого своя, придёт с сервера
   S.sync = JSON.parse(JSON.stringify(DEFAULTS.sync));
   S.auth = { ...S.auth, ok: false, code: '', name: '', owner: false, expires: null, reason: 'logged_out' };
+  savePushAuth();
   syncedOnce = false;
   save();
   return true;
@@ -1310,10 +1473,10 @@ function renderDay() {
     <div class="col">
     <div class="hero" id="day-hero">${dayHero(d)}</div>
 
-    ${card('truck', t('Точки катеринга', 'Punkty cateringu'), `<span class="hint">× ${rate(S.rates.point)} zł</span>`,
+    ${card('truck', t('Точки катеринга', 'Punkty cateringu'), `<span class="hint">× ${rate(rateFor(d).point)} zł</span>`,
       stepper('points', 'p-minus', 'p-plus', x.points, t('Точки', 'Punkty'), 4))}
 
-    ${Z() ? `<div class="zone-z">${card('store', t('Автоматы Жабки', 'Automaty Żabki'), `<span class="hint">× ${rate(S.rates.machine)} zł</span>`,
+    ${Z() ? `<div class="zone-z">${card('store', t('Автоматы Жабки', 'Automaty Żabki'), `<span class="hint">× ${rate(rateFor(d).machine)} zł</span>`,
       stepper('machines', 'm-minus', 'm-plus', x.machines, t('Автоматы', 'Automaty'), 3))}
     ${zabkiCard(d)}</div>` : ''}
     </div>
@@ -1332,7 +1495,7 @@ function dayHero(d) {
   const lbl = d === td ? t('Заработано сегодня', 'Zarobione dziś') : t('Заработано за день', 'Zarobione tego dnia');
   const parts = [`${x.points || 0} ${plPoints(x.points || 0)}`];
   if (Z()) parts.push(`${x.machines || 0} ${plZabki(x.machines || 0)}`);
-  return `<div class="lbl2">${lbl}</div><div class="big">${money(dayMoney(x))}</div><div class="small">${parts.join(' · ')}</div>`;
+  return `<div class="lbl2">${lbl}</div><div class="big">${money(dayMoney(x, d))}</div><div class="small">${parts.join(' · ')}</div>`;
 }
 
 /** «1 точка / 2 точки / 5 точек» и польские формы. */
@@ -1474,8 +1637,8 @@ function payCard(p) {
   const pay = payout(p);
   const body = `
     <p class="muted">${t('За работу', 'Za pracę')} ${periodTitle(p)}</p>
-    <div class="money-row"><span>${t('Точки', 'Punkty')} ${pay.points} × ${rate(S.rates.point)}</span><span>${money(pay.pointsMoney)}</span></div>
-    ${Z() && pay.paidNow ? `<div class="money-row zmoney"><span>${t('Жабки за весь', 'Żabki za cały')} ${zMonthName(pay.zMonth)} · ${pay.machines} × ${rate(S.rates.machine)}</span><span>${money(pay.machinesMoney)}</span></div>` : ''}
+    ${(pay.pointsParts.length ? pay.pointsParts : [{ rate: rateFor(p.end).point, n: 0, money: 0 }]).map((x) => `<div class="money-row"><span>${t('Точки', 'Punkty')} ${x.n} × ${rate(x.rate)}</span><span>${money(x.money)}</span></div>`).join('')}
+    ${Z() && pay.paidNow ? pay.machinesParts.map((x, i) => `<div class="money-row zmoney"><span>${i === 0 ? `${t('Жабки за весь', 'Żabki za cały')} ${zMonthName(pay.zMonth)} · ` : ''}${x.n} × ${rate(x.rate)}</span><span>${money(x.money)}</span></div>`).join('') : ''}
     <div class="total"><span style="font-weight:650">${t('Всего', 'Razem')}</span><b>${money(pay.total)}</b></div>
     ${Z() && !pay.paidNow ? `<p class="muted small">${zPayNote(pay, p)}</p>` : ''}
     ${paidBlock(p, pay.total)}`;
@@ -1505,7 +1668,8 @@ function bars(vals, days, color, h, unit) {
 
 function renderStats() {
   const mi = ui.stats, p = monthPeriod(mi), s = summarize(p), prev = summarize(monthPeriod(mi - 1));
-  const m = sumMoney(s), pm = sumMoney(prev);
+  const mo = moneyOf(p), pmo = moneyOf(monthPeriod(mi - 1));
+  const m = mo.pointsMoney + mo.machinesMoney, pm = pmo.pointsMoney + pmo.machinesMoney;
   const days = daysOf(p);
   const pts = days.map((e) => entry(e).points), mach = days.map((e) => entry(e).machines);
   const avgP = s.workDays ? s.points / s.workDays : 0;
@@ -1532,8 +1696,8 @@ function renderStats() {
       ${pct != null ? `<div class="small">${pct >= 0 ? '▲' : '▼'} ${pct >= 0 ? '+' : ''}${pct}% ${t('к прошлому месяцу', 'do poprzedniego miesiąca')} (${money(pm)})</div>` : ''}
     </div>
     <div class="tiles">
-      ${tile(t('Точки', 'Punkty'), s.points, money(s.points * S.rates.point))}
-      ${Z() ? `<div class="zone-z">${tile(t('Жабки', 'Żabki'), s.machines, money(s.machines * S.rates.machine))}</div>`
+      ${tile(t('Точки', 'Punkty'), s.points, money(mo.pointsMoney))}
+      ${Z() ? `<div class="zone-z">${tile(t('Жабки', 'Żabki'), s.machines, money(mo.machinesMoney))}</div>`
         : tile(t('Лучший день', 'Najlepszy dzień'), bestV, shortD(days[bestI]))}
       ${tile(t('Рабочих дней', 'Dni pracy'), s.workDays)}
       ${tile(t('В среднем за день', 'Średnio dziennie'), num(avgP, 1), t('точек', 'punktów'))}
@@ -1643,11 +1807,9 @@ function renderSettings() {
        <textarea class="field" data-field="zlist" rows="6" placeholder="Bosch, Warszawa, Jutrzenki 105, ZG356-1">${esc(zlist().join('\n'))}</textarea>
        <p class="muted small">${t('Строка целиком уходит в WhatsApp, в конце добавляется «przed/po». Список меняется раз в неделю — его может поправить и владелец в админке.',
          'Cała linia idzie do WhatsApp, na końcu dochodzi „przed/po”. Lista zmienia się raz w tygodniu — może ją poprawić też właściciel w panelu.')}</p>` : ''}`)}
-    ${card('money', t('Ставки', 'Stawki'), '',
-      `<label class="lbl">${t('За 1 точку, zł', 'Za 1 punkt, zł')}</label>
-       <input class="field" data-field="rate-point" inputmode="decimal" value="${rate(S.rates.point)}">
-       ${Z() ? `<label class="lbl">${t('За 1 автомат Жабки, zł', 'Za 1 automat Żabki, zł')}</label>
-       <input class="field" data-field="rate-machine" inputmode="decimal" value="${rate(S.rates.machine)}">` : ''}`)}
+    ${card('money', t('Ставки', 'Stawki'), '', ratesCardBody())}
+
+    ${pushCard()}
     ${syncOn() ? card('sync', t('Записи на сервере', 'Wpisy na serwerze'), '',
       `<p class="muted">${isOwner()
         ? t('Записи, ставки и шапка отчёта хранятся на сервере под твоим кодом и одинаковые на всех твоих устройствах. Язык и тема — у каждого устройства свои.',
@@ -1667,6 +1829,65 @@ function renderSettings() {
     </div>`;
 }
 
+/** Уведомления о новых объявлениях владельца. */
+function pushCard() {
+  if (!AUTH_API || !S.auth.ok) return '';
+  const title = t('Уведомления', 'Powiadomienia');
+  let body;
+  if (pushNeedsInstall()) {
+    body = `<p class="muted">${t('На iPhone уведомления работают, когда приложение добавлено на экран «Домой»: «Поделиться» → «На экран „Домой“», потом открой его оттуда.',
+      'Na iPhonie powiadomienia działają, gdy aplikacja jest dodana do ekranu początkowego: „Udostępnij” → „Do ekranu początkowego”, potem otwórz ją stamtąd.')}</p>`;
+  } else if (!pushSupported()) {
+    body = `<p class="muted">${t('Этот браузер не умеет показывать уведомления.', 'Ta przeglądarka nie obsługuje powiadomień.')}</p>`;
+  } else if (Notification.permission === 'denied') {
+    body = `<p class="muted">${t('Уведомления запрещены в настройках телефона (браузера). Разреши их для этого сайта — и включи здесь.',
+      'Powiadomienia są zablokowane w ustawieniach telefonu (przeglądarki). Zezwól na nie dla tej strony i włącz tutaj.')}</p>`;
+  } else if (S.push.on) {
+    body = `<p class="muted">${ic('check', 16)} ${t('Включены: новое объявление придёт уведомлением, даже если приложение закрыто.', 'Włączone: nowe ogłoszenie przyjdzie jako powiadomienie, nawet gdy aplikacja jest zamknięta.')}</p>
+      <button class="btn tonal" data-act="push-off">${t('Выключить уведомления', 'Wyłącz powiadomienia')}</button>`;
+  } else {
+    body = `<p class="muted">${t('Когда владелец публикует объявление, оно придёт уведомлением, даже если приложение закрыто.', 'Gdy właściciel opublikuje ogłoszenie, przyjdzie ono jako powiadomienie, nawet gdy aplikacja jest zamknięta.')}</p>
+      <button class="btn primary" data-act="push-on">${ic('bell', 18)} ${t('Включить уведомления', 'Włącz powiadomienia')}</button>`;
+  }
+  return card('bell', title, '', body);
+}
+
+/**
+ * Ставки. Без истории — одна ставка на всё время (как раньше). Ставку подняли — «Новая ставка с даты»:
+ * дни до этой даты остаются по старой ставке, выплаты за прошлые периоды не меняются.
+ */
+function ratesCardBody() {
+  const h = S.rateHist || [];
+  const base = h.length ? h[0] : S.rates;
+  const fmt = (r) => `${rate(r.point)} zł${Z() ? ` · Ż ${rate(r.machine)} zł` : ''}`;
+  const today = iso(todayDay());
+  const form = ui.rateForm ? `
+    <div class="rate-form">
+      <label class="lbl" for="rn-date">${t('Действует с', 'Obowiązuje od')}</label>
+      <input class="field" id="rn-date" type="date" value="${today}">
+      <label class="lbl" for="rn-point">${t('За 1 точку, zł', 'Za 1 punkt, zł')}</label>
+      <input class="field" id="rn-point" inputmode="decimal" value="${rate(S.rates.point)}">
+      ${Z() ? `<label class="lbl" for="rn-machine">${t('За 1 автомат Жабки, zł', 'Za 1 automat Żabki, zł')}</label>
+      <input class="field" id="rn-machine" inputmode="decimal" value="${rate(S.rates.machine)}">` : ''}
+      <p class="err" id="rn-err"></p>
+      <div class="btn-row">
+        <button class="btn tonal" data-act="rate-cancel">${t('Отмена', 'Anuluj')}</button>
+        <button class="btn primary" data-act="rate-save">${t('Сохранить', 'Zapisz')}</button>
+      </div>
+    </div>` : `<button class="btn tonal" data-act="rate-form">${ic('plus', 18)} ${t('Новая ставка с даты', 'Nowa stawka od daty')}</button>`;
+  return `
+    <label class="lbl">${h.length ? t('Сначала (до первого изменения)', 'Na początku (do pierwszej zmiany)') : ''} ${t('За 1 точку, zł', 'Za 1 punkt, zł')}</label>
+    <input class="field" data-field="rate-point" inputmode="decimal" value="${rate(base.point)}">
+    ${Z() ? `<label class="lbl">${t('За 1 автомат Жабки, zł', 'Za 1 automat Żabki, zł')}</label>
+    <input class="field" data-field="rate-machine" inputmode="decimal" value="${rate(base.machine)}">` : ''}
+    ${h.slice(1).map((x) => `<div class="rate-row ${x.f > today ? 'future' : ''}">
+        <span><b>${t('С', 'Od')} ${fullD(fromIso(x.f))}</b> — ${fmt(x)}${x.f > today ? ` <span class="muted small">(${t('ещё не началась', 'jeszcze nie obowiązuje')})</span>` : ''}</span>
+        <button class="link" data-act="rate-del" data-f="${x.f}" aria-label="${t('Удалить', 'Usuń')}">${ic('x', 16)}</button>
+      </div>`).join('')}
+    ${form}
+    <p class="muted small">${t('Подняли ставку — добавь новую с нужного дня. Дни до него и прошлые выплаты останутся по старой ставке.',
+      'Podnieśli stawkę — dodaj nową od właściwego dnia. Dni wcześniej i dawne wypłaty zostaną po starej stawce.')}</p>`;
+}
 /* ===================== Установка на экран ===================== */
 const isStandalone = () => window.matchMedia('(display-mode: standalone)').matches || window.navigator.standalone === true;
 const isIOS = () => /iPhone|iPad|iPod/.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
@@ -1920,12 +2141,43 @@ async function shareFile(name, content, type) {
 
 const actions = {
   // Человек без доступа (код отключён / нет интернета) всё равно может забрать свои записи
-  backup() { shareFile(`uchet-raboty-${iso(todayDay())}.json`, JSON.stringify({ app: 'uchet-raboty', version: VERSION, entries: S.entries, rates: S.rates, header: S.settings.header || '', paid: S.paid }, null, 1), 'application/json'); },
+  backup() { shareFile(`uchet-raboty-${iso(todayDay())}.json`, JSON.stringify({ app: 'uchet-raboty', version: VERSION, entries: S.entries, rates: S.rates, rateHist: S.rateHist, header: S.settings.header || '', paid: S.paid }, null, 1), 'application/json'); },
   tab(el) { const v = Number(el.dataset.v); if (v !== ui.tab) { ui.tab = v; tabBounce = true; if (v === 0) ui.day = ui.day; render(true); } else if (v === 0 && ui.day !== todayDay()) { ui.day = todayDay(); render(true); } },
   prev() { navigate(-1); },
   next() { navigate(1); },
   today() { ui.day = todayDay(); render(true); },
   'open-day'(el) { ui.day = Number(el.dataset.day); ui.tab = 0; render(true); },
+  async 'push-on'(el) {
+    el.disabled = true;
+    let r = 'error';
+    try { r = await pushOn(); } catch (e) { r = 'error'; }
+    el.disabled = false;
+    if (r === 'ok') toast(t('Уведомления включены', 'Powiadomienia włączone'));
+    else if (r === 'denied') toast(t('Уведомления запрещены — разреши их в настройках', 'Powiadomienia zablokowane — zezwól w ustawieniach'));
+    else if (r !== 'unsupported') toast(t('Не получилось включить — проверь интернет', 'Nie udało się włączyć — sprawdź internet'));
+    render();
+  },
+  async 'push-off'() { await pushOff(); toast(t('Уведомления выключены', 'Powiadomienia wyłączone')); render(); },
+  'rate-form'() { ui.rateForm = true; render(); const d = document.getElementById('rn-date'); if (d) d.focus(); },
+  'rate-cancel'() { ui.rateForm = false; render(); },
+  'rate-save'() {
+    const num = (id) => { const el = document.getElementById(id); return el ? parseFloat(el.value.replace(',', '.')) : NaN; };
+    const from = (document.getElementById('rn-date') || {}).value || '';
+    const point = num('rn-point');
+    const machine = Z() ? num('rn-machine') : rateOn(R(), fromIso(from || iso(todayDay()))).machine;
+    const err = document.getElementById('rn-err');
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(from)) { err.textContent = t('Выбери дату', 'Wybierz datę'); return; }
+    if (!(point >= 0) || !(machine >= 0)) { err.textContent = t('Ставка — число, например 3,10', 'Stawka to liczba, np. 3,10'); return; }
+    addRate(from, Math.round(point * 100) / 100, Math.round(machine * 100) / 100);
+    ui.rateForm = false;
+    render();
+    toast(t(`Новая ставка с ${fullD(fromIso(from))}`, `Nowa stawka od ${fullD(fromIso(from))}`));
+  },
+  'rate-del'(el) {
+    if (!confirm(t('Удалить это изменение ставки? Эти дни будут считаться по предыдущей ставке.', 'Usunąć tę zmianę stawki? Te dni będą liczone po poprzedniej stawce.'))) return;
+    setRateHist((S.rateHist || []).filter((x) => x.f !== el.dataset.f));
+    render();
+  },
   'p-minus'() { const was = entry(ui.day).points || 0; if (!was) return; update(ui.day, (x) => { x.points = was - 1; }); syncNum('points'); refreshDay(); pulse(document.querySelector('[data-field="points"]')); buzz(8); pointsMoneyFx(was); },
   'p-plus'() { const was = entry(ui.day).points || 0; if (was >= 9999) return; update(ui.day, (x) => { x.points = was + 1; }); syncNum('points'); refreshDay(); pulse(document.querySelector('[data-field="points"]')); buzz(8); pointsMoneyFx(was); },
   'm-minus'() { update(ui.day, (x) => { x.machines = Math.max(0, x.machines - 1); }); syncNum('machines'); refreshDay(); pulse(document.querySelector('[data-field="machines"]')); buzz(8); },
@@ -1979,7 +2231,7 @@ const actions = {
     el.closest('svg').querySelectorAll('.hit.sel').forEach((r) => r.classList.remove('sel'));
     el.classList.add('sel');
   },
-  lang(el) { S.settings.lang = el.dataset.v; save(); if (locked()) $sheet.innerHTML = ''; render(); },
+  lang(el) { S.settings.lang = el.dataset.v; save(); savePushAuth(); if (locked()) $sheet.innerHTML = ''; render(); },
   async activate() {
     const inp = document.getElementById('lock-code');
     const err = document.getElementById('lock-err');
@@ -2054,8 +2306,8 @@ const fields = {
   machines(el) { const v = el.value.replace(/\D/g, '').slice(0, 3); if (v !== el.value) el.value = v; update(ui.day, (x) => { x.machines = Number(v) || 0; }); refreshDay(); },
   header(el) { S.settings.header = el.value; metaChanged('header'); save(); },
   zlist(el) { S.settings.zlist = el.value.split('\n').map((s) => s.trim()).filter(Boolean).slice(0, 60); metaChanged('zlist'); save(); },
-  'rate-point'(el) { const v = parseFloat(el.value.replace(',', '.')); if (Number.isFinite(v) && v >= 0) { S.rates.point = v; metaChanged('rates'); save(); } },
-  'rate-machine'(el) { const v = parseFloat(el.value.replace(',', '.')); if (Number.isFinite(v) && v >= 0) { S.rates.machine = v; metaChanged('rates'); save(); } },
+  'rate-point'(el) { const v = parseFloat(el.value.replace(',', '.')); if (Number.isFinite(v) && v >= 0) setBaseRate('point', v); },
+  'rate-machine'(el) { const v = parseFloat(el.value.replace(',', '.')); if (Number.isFinite(v) && v >= 0) setBaseRate('machine', v); },
   paid(el) {
     const raw = el.value.replace(/[\s  ]/g, '').replace(',', '.');
     const v = raw === '' ? null : Number(raw);
@@ -2165,3 +2417,4 @@ if (S.cloud.on && AUTH_API && S.auth.code) {
 render(true);
 checkAccess(true);
 presence(true);
+pushRefresh();

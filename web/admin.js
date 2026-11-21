@@ -10,6 +10,7 @@
   let archived = []; // удалённые коды — записи сохранены, можно вернуть
   let backups = null; // список резервных копий на сервере
   let errors = []; // журнал ошибок: сервер, ночная копия, приложения на телефонах
+  let pushInfo = null; // кому придёт уведомление об объявлении (подписки веб-версии)
   let query = '';
   let filter = 'all';
   let tab = sessionStorage.getItem('admin-tab') || 'people';
@@ -163,6 +164,9 @@
     if (pass && document.visibilityState === 'visible' && tab === 'people' && items.length) { await loadOnline(); refreshPeople(); }
   });
 
+  async function loadPush() {
+    try { pushInfo = await call('/admin/push'); } catch (e) { /* нет связи */ }
+  }
   async function loadErrors() {
     try { errors = (await call('/admin/errors')).list || []; } catch (e) { /* нет связи — оставляем прежнее */ }
   }
@@ -185,7 +189,7 @@
   const dayRu = (d) => d.split('-').reverse().join('.');
 
   async function load() {
-    const [r] = await Promise.all([call('/admin/list'), loadSite(), loadOnline(), loadBackups(), loadErrors()]);
+    const [r] = await Promise.all([call('/admin/list'), loadSite(), loadOnline(), loadBackups(), loadErrors(), loadPush()]);
     items = r.items || [];
     archived = r.archived || [];
     cfg = r.cfg || null;
@@ -322,6 +326,7 @@
       <section class="card">
         <h3>Объявление для всех</h3>
         <p class="muted small">Текст появится сверху в приложении у каждого. Человек может закрыть его крестиком.</p>
+        ${pushInfo ? `<p class="muted small">🔔 Уведомлением на телефон: ${pushInfo.ready ? `сразу — ${pushInfo.subs.length} ${plural(pushInfo.subs.length, 'устройству', 'устройствам', 'устройствам')} с веб-версией (кто включил уведомления в Настройках)` : 'веб-версии — пока не настроено на сервере'}; с Android-приложением (4.7 и новее) — в течение ~15 минут.</p>` : ''}
         ${c.msg ? `<span class="now">Сейчас показывается</span>` : ''}
         <textarea class="field" id="msg" rows="3" maxlength="500" placeholder="Например: в пятницу работаем до 14:00">${esc(c.msg ? c.msg.text : '')}</textarea>
         <div class="btn-row">
@@ -368,6 +373,18 @@
           <input class="field" id="offline" inputmode="numeric" value="${c.offlineDays ?? 7}" aria-label="Дней без интернета">
           <button class="btn primary" data-s="offline-save">Сохранить</button>
         </div>
+      </section>
+
+      <section class="card">
+        <h3>Ставки для всех</h3>
+        <p class="muted small">Фирма подняла ставку — впиши новую и с какого дня она действует. У всех людей дни до этой даты останутся по старой ставке, прошлые выплаты не изменятся. Придёт людям при следующей синхронизации.</p>
+        <div class="two">
+          <div><label class="lbl" for="rate-from">С какого дня</label><input class="field" id="rate-from" type="date" value="${isoDate(Date.now())}"></div>
+          <div><label class="lbl" for="rate-point">За 1 точку, zł</label><input class="field" id="rate-point" inputmode="decimal" placeholder="3,10"></div>
+        </div>
+        <label class="lbl" for="rate-machine">За 1 Жабку, zł (пусто — не менять)</label>
+        <input class="field" id="rate-machine" inputmode="decimal" placeholder="не менять">
+        <button class="btn primary" data-s="rates-all">Применить ко всем</button>
       </section>
 
       <section class="card">
@@ -536,7 +553,9 @@
         entries[k] = { points: d.p || 0, machines: d.m || 0, start: d.s ?? null, end: d.e ?? null, note: d.n || '', z: d.z || [] };
       }
       const meta = r.meta || {};
-      const rates = meta.rates && meta.rates.point > 0 ? meta.rates : { point: 2.9, machine: 35 };
+      const base = meta.rates && meta.rates.point > 0 ? meta.rates : { point: 2.9, machine: 35 };
+      // С историей ставок каждый день считается по своей ставке (как в приложении)
+      const rates = Array.isArray(meta.rhist) && meta.rhist.length > 1 ? { ...base, hist: meta.rhist } : base;
       const zabka = typeof meta.zabka === 'boolean' ? meta.zabka : Object.values(entries).some((x) => x.machines > 0);
       // Начинаем с последнего месяца, где есть записи (или с текущего)
       const keys = Object.keys(entries).sort();
@@ -572,9 +591,9 @@
       return `<div class="rec-half">
         <h4>Работа ${C.ymd(p.start).d}–${C.ymd(p.end).d} ${MONTHS_GEN[m - 1]} → выплата ${pay.paidNow ? `1–15 ${MONTHS_GEN[m % 12]}` : `16–${n} ${MONTHS_GEN[m - 1]}`}</h4>
         <div class="row2"><span>Рабочих дней</span><span>${sm.workDays}</span></div>
-        <div class="row2"><span>Точки ${pay.points} × ${rt(s.rates.point)}</span><span>${zl(pay.pointsMoney)}</span></div>
+        ${pay.pointsParts.map((x) => `<div class="row2"><span>Точки ${x.n} × ${rt(x.rate)}</span><span>${zl(x.money)}</span></div>`).join('') || '<div class="row2"><span>Точки 0</span><span>0,00 zł</span></div>'}
         ${s.zabka ? (pay.paidNow
-          ? `<div class="row2"><span>Жабки за весь ${MONTHS[m - 1].toLowerCase()} ${pay.machines} × ${rt(s.rates.machine)}</span><span>${zl(pay.machinesMoney)}</span></div>`
+          ? pay.machinesParts.map((x, i) => `<div class="row2"><span>${i === 0 ? `Жабки за весь ${MONTHS[m - 1].toLowerCase()} ` : ''}${x.n} × ${rt(x.rate)}</span><span>${zl(x.money)}</span></div>`).join('')
           : `<div class="row2"><span>Жабки ${pay.machines} (войдут в выплату за 16–${n})</span><span class="muted">${zl(pay.machinesMoney)}</span></div>`) : ''}
         <div class="row2 tot"><span>К выплате</span><span>${zl(pay.total)}</span></div>
         <div class="row2"><span>Пришло на счёт</span>${rc}</div>
@@ -604,7 +623,7 @@
       <button class="btn tonal" data-re="new">+ Добавить или исправить день</button>
       <button class="link" data-re="restore" style="align-self:flex-start">Вернуть пропавшие дни из резервной копии</button>
       ${s.header ? `<div><label class="lbl">Шапка отчёта</label><div class="rec-meta">${esc(s.header)}</div></div>` : ''}
-      <p class="muted small" style="margin:0">Ставки: ${rt(s.rates.point)} zł за точку${s.zabka ? `, ${rt(s.rates.machine)} zł за автомат Жабки` : ' · Жабка выключена'}${s.months.length ? ` · месяцев с записями: ${s.months.length}` : ''}</p>`;
+      <p class="muted small" style="margin:0">Ставки: ${(s.rates.hist || [{ f: '', ...s.rates }]).map((h, i) => `${i ? `с ${h.f.split('-').reverse().join('.')} ` : ''}${rt(h.point)} zł за точку${s.zabka ? `, ${rt(h.machine)} zł за Жабку` : ''}`).join(' → ')}${s.zabka ? '' : ' · Жабка выключена'}${s.months.length ? ` · месяцев с записями: ${s.months.length}` : ''}</p>`;
   }
 
   /* ---------- Исправить день у человека ---------- */
@@ -917,6 +936,18 @@
             `Готово: всем предлагается ${a.name}`);
         }
         case 'offline-save': return saveCfg({ offlineDays: v('offline') });
+        case 'rates-all': {
+          const from = v('rate-from');
+          const num = (s2) => parseFloat(String(s2).replace(',', '.'));
+          const point = num(v('rate-point')), machine = v('rate-machine') ? num(v('rate-machine')) : null;
+          if (!/^\d{4}-\d{2}-\d{2}$/.test(from)) { toast('Выбери дату'); return; }
+          if (!(point >= 0) || (machine != null && !(machine >= 0))) { toast('Ставка — число, например 3,10'); return; }
+          const dRu = from.split('-').reverse().join('.');
+          if (!await dialog({ title: 'Новая ставка для всех?', text: `С ${dRu}: ${rt(point)} zł за точку${machine != null ? `, ${rt(machine)} zł за Жабку` : ''}. У всех людей дни до ${dRu} останутся по старой ставке.`, ok: 'Применить' })) return;
+          try { const r = await call('/admin/rates', 'POST', { from, point, machine }); toast(`Готово: новая ставка у ${r.codes} ${plural(r.codes, 'человека', 'человек', 'человек')}`); }
+          catch (e) { toast('Ошибка'); }
+          return;
+        }
         case 'err-clear':
           if (!await dialog({ title: 'Очистить журнал ошибок?', text: 'Записи об ошибках будут стёрты. Новые ошибки снова появятся здесь.', ok: 'Очистить' })) return;
           try { await call('/admin/errors/clear', 'POST', {}); errors = []; render(); toast('Журнал очищен'); } catch (e) { toast('Ошибка'); }
