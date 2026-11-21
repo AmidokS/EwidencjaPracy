@@ -2,7 +2,7 @@
 /* Учёт работы — PWA. Создатель: Artur Alimhulov.
    Данные хранятся на телефоне (localStorage) и копией на сервере под кодом доступа (см. «Записи на сервере»). */
 
-const VERSION = '4.3';
+const VERSION = '4.4';
 const STORE_KEY = 'uchet-raboty-v1';
 
 /* ==== calc:begin ====
@@ -1310,7 +1310,10 @@ function renderCalendar() {
       ${Z() && x && x.machines ? `<span class="cm">Ż${x.machines}</span>` : ''}
     </button>`;
   }
-  const halves = [{ start: first, end: dayOf(y, m, 15) }, { start: dayOf(y, m, 16), end: dayOf(y, m, n) }];
+  // Карточки — по датам, когда приходят деньги в этом месяце:
+  // 1–15 — за работу 16–конец прошлого месяца (точки + Жабки за весь прошлый месяц), 16–конец — за работу 1–15 этого.
+  const pv = ymd(monthFirst(mi - 1));
+  const halves = [{ start: dayOf(pv.y, pv.m, 16), end: dayOf(pv.y, pv.m, daysInMonth(pv.y, pv.m)) }, { start: first, end: dayOf(y, m, 15) }];
   const halfCards = halves.map(payCard).join('');
 
   return `
@@ -1333,11 +1336,11 @@ function renderReport() {
   counts.push(`${s.workDays} ${plDays(s.workDays)}`);
 
   const hero = `<div class="hero">
-      <div class="lbl2">${t('К выплате за период', 'Do wypłaty za okres')}</div>
+      <div class="lbl2">${t('Придёт за этот период', 'Za ten okres przyjdzie')}</div>
       <div class="big">${money(pay.total)}</div>
       <div class="small">${counts.join(' · ')}</div>
       <div class="small">${t('Деньги придут', 'Pieniądze przyjdą')}: ${payArrival(p)}</div>
-      ${Z() && pay.machines > 0 ? `<div class="small">${zPayNote(pay)}</div>` : ''}
+      ${Z() ? `<div class="small">${zPayNote(pay, p)}</div>` : ''}
     </div>`;
 
   // Отчёт как сообщение в чате: строки дней можно нажать — откроется день
@@ -1386,32 +1389,37 @@ function paidBlock(p, expected) {
 /** «октябрь» / «październik» — месяц, за который Жабки в выплате. */
 const zMonthName = (mi) => MONTHS[L()][((mi % 12) + 12) % 12].toLowerCase();
 /** Пояснение про Жабки: в выплате за 16–конец — за весь месяц; в 1–15 — что они пока копятся. */
-function zPayNote(pay) {
+function zPayNote(pay, p) {
   const n = `${pay.machines} ${plZabki(pay.machines)} = ${money(pay.machinesMoney)}`;
   if (pay.paidNow) return t(`Сюда входят Жабки за весь ${zMonthName(pay.zMonth)}: ${n}`, `W tym Żabki za cały ${zMonthName(pay.zMonth)}: ${n}`);
-  return t(`Жабки (${n}) не входят — они считаются за весь месяц и придут в выплате за 16–конец`,
-    `Żabki (${n}) nie wchodzą — liczą się za cały miesiąc i wejdą do wypłaty za 16–koniec`);
+  // 1–15: Жабки этого месяца копятся — сколько их уже за месяц и когда придут
+  const { y, m } = ymd(p.start), whole = payout({ start: dayOf(y, m, 16), end: dayOf(y, m, daysInMonth(y, m)) });
+  const w = `${whole.machines} ${plZabki(whole.machines)} = ${money(whole.machinesMoney)}`;
+  const next = MONTHS_GEN[L()][(pay.zMonth + 1) % 12];
+  return t(`Жабки за ${zMonthName(pay.zMonth)} (пока ${w}) придут в выплате 1–15 ${next}`,
+    `Żabki za ${zMonthName(pay.zMonth)} (na razie ${w}) przyjdą w wypłacie 1–15 ${next}`);
 }
-/** Когда придут деньги за этот период: за 1–15 — 16–конец того же месяца, за 16–конец — 1–15 следующего. */
+/** Когда придут деньги за работу в периоде p: за 1–15 — 16–конец того же месяца, за 16–конец — 1–15 следующего. */
 function payArrival(p) {
   const mi = monthIndexOf(p.start), { y, m } = ymd(p.start);
   return isSecondHalf(p) ? `1–15 ${MONTHS_GEN[L()][(mi + 1) % 12]}` : `16–${daysInMonth(y, m)} ${MONTHS_GEN[L()][mi % 12]}`;
 }
 
-/** Карточка «К оплате» за период выплаты (в календаре — по одной на каждую половину месяца). */
+/**
+ * Карточка выплаты. Название — когда придут деньги («Выплата 1–15 ноября»), под ним — за какую работу.
+ * p — период работы; сверка «Пришло на счёт» хранится по нему же.
+ */
 function payCard(p) {
-  const s = summarize(p), pay = payout(p);
+  const pay = payout(p);
   const body = `
-    <p class="muted">${s.points} ${plPoints(s.points)}${Z() ? ` · ${s.machines} ${plZabki(s.machines)}` : ''}</p>
+    <p class="muted">${t('За работу', 'Za pracę')} ${periodTitle(p)}</p>
     <div class="money-row"><span>${t('Точки', 'Punkty')} ${pay.points} × ${rate(S.rates.point)}</span><span>${money(pay.pointsMoney)}</span></div>
-    ${Z() && pay.paidNow ? `<div class="money-row zrow"><span>${t('Жабки за весь', 'Żabki za cały')} ${zMonthName(pay.zMonth)} ${pay.machines} × ${rate(S.rates.machine)}</span><span>${money(pay.machinesMoney)}</span></div>` : ''}
+    ${Z() && pay.paidNow ? `<div class="money-row zmoney"><span>${t('Жабки за весь', 'Żabki za cały')} ${zMonthName(pay.zMonth)} · ${pay.machines} × ${rate(S.rates.machine)}</span><span>${money(pay.machinesMoney)}</span></div>` : ''}
     <div class="total"><span style="font-weight:650">${t('Всего', 'Razem')}</span><b>${money(pay.total)}</b></div>
-    <p class="muted small arrive">${ic('calendar', 14)} ${t('Деньги придут', 'Pieniądze przyjdą')}: ${payArrival(p)}</p>
-    ${Z() && !pay.paidNow && pay.machines > 0 ? `<p class="muted small">${zPayNote(pay)}</p>` : ''}
+    ${Z() && !pay.paidNow ? `<p class="muted small">${zPayNote(pay, p)}</p>` : ''}
     ${paidBlock(p, pay.total)}`;
-  return card('money', `${t('К оплате', 'Do wypłaty')} · ${periodTitle(p)}`, '', body);
+  return card('money', `${t('Выплата', 'Wypłata')} ${payArrival(p)}`, '', body);
 }
-
 /* ===================== Экран «Итоги» ===================== */
 /**
  * Столбики по дням месяца: выходные слегка подсвечены, сегодня отмечено точкой,

@@ -720,14 +720,13 @@
           : `<span class="rec-ok">${zl(paid)} · больше на ${zl(r.diff)}</span>`;
       }
       return `<div class="rec-half">
-        <h4>${C.ymd(p.start).d}–${C.ymd(p.end).d} ${MONTHS_GEN[m - 1]}</h4>
+        <h4>Работа ${C.ymd(p.start).d}–${C.ymd(p.end).d} ${MONTHS_GEN[m - 1]} → выплата ${pay.paidNow ? `1–15 ${MONTHS_GEN[m % 12]}` : `16–${n} ${MONTHS_GEN[m - 1]}`}</h4>
         <div class="row2"><span>Рабочих дней</span><span>${sm.workDays}</span></div>
         <div class="row2"><span>Точки ${pay.points} × ${rt(s.rates.point)}</span><span>${zl(pay.pointsMoney)}</span></div>
         ${s.zabka ? (pay.paidNow
           ? `<div class="row2"><span>Жабки за весь ${MONTHS[m - 1].toLowerCase()} ${pay.machines} × ${rt(s.rates.machine)}</span><span>${zl(pay.machinesMoney)}</span></div>`
           : `<div class="row2"><span>Жабки ${pay.machines} (войдут в выплату за 16–${n})</span><span class="muted">${zl(pay.machinesMoney)}</span></div>`) : ''}
         <div class="row2 tot"><span>К выплате</span><span>${zl(pay.total)}</span></div>
-        <div class="row2"><span>Деньги придут</span><span>${pay.paidNow ? `1–15 ${MONTHS_GEN[m % 12]}` : `16–${n} ${MONTHS_GEN[m - 1]}`}</span></div>
         <div class="row2"><span>Пришло на счёт</span>${rc}</div>
       </div>`;
     };
