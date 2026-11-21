@@ -577,3 +577,4 @@ button.rl:active { background: var(--outline-v); }
 }
 .empty .ic { color: var(--primary); opacity: .8; }
 .empty b { color: var(--text); font-size: 17px; }
+.money-row.zrow span:first-child { color: var(--z); }

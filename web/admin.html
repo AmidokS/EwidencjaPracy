@@ -724,8 +724,8 @@
         <div class="row2"><span>Рабочих дней</span><span>${sm.workDays}</span></div>
         <div class="row2"><span>Точки ${pay.points} × ${rt(s.rates.point)}</span><span>${zl(pay.pointsMoney)}</span></div>
         ${s.zabka ? (pay.paidNow
-          ? `<div class="row2"><span>Жабка за месяц ${pay.machines} × ${rt(s.rates.machine)}</span><span>${zl(pay.machinesMoney)}</span></div>`
-          : `<div class="row2"><span>Жабка ${pay.machines} (оплата в 16–${n})</span><span class="muted">${zl(pay.machinesMoney)}</span></div>`) : ''}
+          ? `<div class="row2"><span>Жабки за ${MONTHS[(m + 10) % 12].toLowerCase()} ${pay.machines} × ${rt(s.rates.machine)}</span><span>${zl(pay.machinesMoney)}</span></div>`
+          : `<div class="row2"><span>Жабки за ${MONTHS[m - 1].toLowerCase()} ${pay.machines} (придут 1–15 ${MONTHS_GEN[m % 12]})</span><span class="muted">${zl(pay.machinesMoney)}</span></div>`) : ''}
         <div class="row2 tot"><span>К выплате</span><span>${zl(pay.total)}</span></div>
         <div class="row2"><span>Пришло на счёт</span>${rc}</div>
       </div>`;
